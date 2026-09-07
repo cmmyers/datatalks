@@ -382,14 +382,14 @@ class CreateHouseholdViewTests(TestCase):
         user = User.objects.get()
         self.assertEqual(self.client.session["user_id"], user.id)
 
-    def test_successful_submission_redirects_to_health(self):
+    def test_successful_submission_redirects_to_chore_pool(self):
         response = self.client.post(
             "/identity/",
             {"household_name": "Smith House", "display_name": "Alex"},
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, "/")
+        self.assertEqual(response.url, "/chores/")
 
     def test_blank_household_name_rerenders_with_error_and_creates_no_rows(self):
         response = self.client.post(
@@ -455,14 +455,14 @@ class JoinHouseholdViewTests(TestCase):
         new_user = User.objects.get(name="Jamie")
         self.assertEqual(self.client.session["user_id"], new_user.id)
 
-    def test_successful_join_redirects_to_health(self):
+    def test_successful_join_redirects_to_chore_pool(self):
         response = self.client.post(
             "/identity/",
             {"action": "join", "join_code": "JOINME1", "display_name": "Jamie"},
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, "/")
+        self.assertEqual(response.url, "/chores/")
 
     def test_join_code_matching_no_household_rerenders_with_error(self):
         response = self.client.post(
@@ -570,6 +570,7 @@ class SwitchIdentityViewTests(TestCase):
         response = self.client.post("/switch/", {"user_id": self.user2.id})
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/chores/")
         self.assertEqual(self.client.session["user_id"], self.user2.id)
         membership = HouseholdMember.objects.get(user_id=self.client.session["user_id"])
         self.assertEqual(membership.household, self.household2)
@@ -579,6 +580,7 @@ class SwitchIdentityViewTests(TestCase):
         response = self.client.post("/switch/", {"user_id": self.user1.id})
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/chores/")
         self.assertEqual(self.client.session["user_id"], self.user1.id)
         membership = HouseholdMember.objects.get(user_id=self.client.session["user_id"])
         self.assertEqual(membership.household, self.household1)
@@ -644,3 +646,79 @@ class SwitchIdentityViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/identity/")
+
+
+class ChorePoolViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def test_open_chore_in_active_household_appears_in_list(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.get("/chores/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(chore, list(response.context["chores"]))
+
+    def test_open_chore_in_different_household_excluded(self):
+        Chore.objects.create(
+            household=self.other_household, name="Laundry", room="Bathroom", points=3
+        )
+
+        response = self.client.get("/chores/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_claimed_chore_in_active_household_excluded(self):
+        Chore.objects.create(
+            household=self.household,
+            name="Trash",
+            room="Kitchen",
+            points=2,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.get("/chores/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_household_with_no_open_chores_renders_200_with_empty_list(self):
+        response = self.client.get("/chores/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_no_active_identity_redirects_to_identity(self):
+        fresh_client = Client()
+        response = fresh_client.get("/chores/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+    def test_same_named_chores_render_in_deterministic_order_by_id(self):
+        first = Chore.objects.create(
+            household=self.household, name="Sweep", room="Kitchen", points=1
+        )
+        second = Chore.objects.create(
+            household=self.household, name="Sweep", room="Living Room", points=2
+        )
+
+        response = self.client.get("/chores/")
+
+        self.assertEqual(list(response.context["chores"]), [first, second])
+
+        response_again = self.client.get("/chores/")
+        self.assertEqual(list(response_again.context["chores"]), [first, second])

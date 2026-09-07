@@ -6,4 +6,5 @@ urlpatterns = [
     path("", views.health, name="health"),
     path("identity/", views.choose_identity, name="choose_identity"),
     path("switch/", views.switch_identity, name="switch_identity"),
+    path("chores/", views.chore_pool, name="chore_pool"),
 ]

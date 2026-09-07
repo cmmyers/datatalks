@@ -3,7 +3,7 @@ from django.http import HttpResponse
 from django.shortcuts import redirect, render
 
 from .identity import get_current_user, require_identity, set_current_user
-from .models import Household, HouseholdMember, User, generate_join_code
+from .models import Chore, Household, HouseholdMember, User, generate_join_code
 
 
 def health(request):
@@ -28,11 +28,11 @@ def choose_identity(request):
         if action == "join":
             error = _handle_join(request)
             if error is None:
-                return redirect("health")
+                return redirect("chore_pool")
         else:
             error = _handle_create(request)
             if error is None:
-                return redirect("health")
+                return redirect("chore_pool")
 
     return render(request, "chores/choose_identity.html", {"error": error})
 
@@ -49,10 +49,6 @@ def _handle_create(request):
     user = User.objects.create(name=display_name)
     HouseholdMember.objects.create(user=user, household=household)
     set_current_user(request, user)
-    # Interim landing target: the chore pool (task 8) doesn't exist
-    # yet, so redirect to the health-check URL as a stand-in. Task 8
-    # should update this (and tasks 6/7/12's equivalent redirects) to
-    # point at the real chore pool once it exists.
     return None
 
 
@@ -107,7 +103,7 @@ def switch_identity(request):
                 error = "That identity is not available in this session."
             else:
                 set_current_user(request, user)
-                return redirect("health")
+                return redirect("chore_pool")
 
     current_user = get_current_user(request)
     known_user_ids = request.session.get("known_user_ids", [])
@@ -131,6 +127,25 @@ def switch_identity(request):
         "chores/switch_identity.html",
         {"identities": identities, "error": error},
     )
+
+
+@require_identity
+def chore_pool(request):
+    # Read-only view of all open (unclaimed) chores for the active
+    # household. Wrapped in the task 4 identity guard, so a session with
+    # no active identity redirects to /identity/ instead of rendering
+    # here. Each User row created by the create/join flows (tasks 5/6)
+    # belongs to exactly one household, so this HouseholdMember lookup is
+    # unambiguous.
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    chores = Chore.objects.filter(household=household, status=Chore.STATUS_OPEN).order_by(
+        "name", "id"
+    )
+
+    return render(request, "chores/chore_pool.html", {"chores": chores})
 
 
 def _create_household_with_retry(name):
