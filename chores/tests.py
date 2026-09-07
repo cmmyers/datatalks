@@ -14,7 +14,7 @@ from chores.models import Chore, Household, HouseholdMember, User, WeeklyComplet
 
 class HealthViewTests(TestCase):
     def test_returns_200(self):
-        response = self.client.get("/")
+        response = self.client.get("/health/")
         self.assertEqual(response.status_code, 200)
 
 
@@ -722,3 +722,44 @@ class ChorePoolViewTests(TestCase):
 
         response_again = self.client.get("/chores/")
         self.assertEqual(list(response_again.context["chores"]), [first, second])
+
+
+class IndexViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+    def test_no_active_identity_redirects_to_identity(self):
+        response = self.client.get("")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+    def test_active_identity_returns_200_with_links(self):
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+        response = self.client.get("")
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("/chores/", content)
+        self.assertIn("/switch/", content)
+
+    def test_visiting_root_does_not_mutate_session(self):
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session["known_user_ids"] = [self.user.id]
+        session.save()
+
+        before_user_id = self.client.session["user_id"]
+        before_known_user_ids = list(self.client.session["known_user_ids"])
+
+        self.client.get("")
+
+        self.assertEqual(self.client.session["user_id"], before_user_id)
+        self.assertEqual(
+            list(self.client.session["known_user_ids"]), before_known_user_ids
+        )

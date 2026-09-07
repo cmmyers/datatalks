@@ -10,6 +10,17 @@ def health(request):
     return HttpResponse("OK")
 
 
+@require_identity
+def index(request):
+    # Minimal home/landing page at "/". Wrapped in the task 4 identity
+    # guard, so a session with no active identity redirects to /identity/
+    # instead of seeing links to views it can't use yet. This is
+    # intentionally minimal — task 18 builds the full shared nav/base
+    # template and should extend this same view rather than introduce a
+    # competing landing page.
+    return render(request, "chores/index.html")
+
+
 def choose_identity(request):
     # Redirect target for the task 4 identity guard. Extended in task 5 with
     # a "create a household" form and in task 6 with a "join an existing
