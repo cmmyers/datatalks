@@ -24,90 +24,435 @@ unique within a household (case-insensitive) at the membership level, since
 names are not unique globally. Include migrations and model-level tests
 (uniqueness constraint, basic creation).
 
-## 3. `Chore` and `WeeklyCompletion` models
+## 3. `Chore` and `WeeklyCompletion` models — Completed 2026-09-07 13:35 PDT
 Goal: Model chores and the log of completions that drives points/history.
-Description: Add a `Chore` model (`household`, `name`, `room`, `points`,
-`status` of open/claimed, nullable `claimed_by`) and a `WeeklyCompletion`
-model (`chore`, `household`, `user`, `points_awarded`, `week_start_date`,
-`completed_at`). `WeeklyCompletion` is the source of truth for both the
-points board and history views built later. Include migrations and tests
-covering field defaults and basic creation.
+Description: Add a `Chore` model (`household` FK, `name`, `room`, `points`
+as a positive integer — must be greater than zero, enforced with a validator
+such as `MinValueValidator(1)`, not just `PositiveIntegerField` which alone
+would still permit `0` — `status` restricted to `open`/`claimed` via model
+`choices` and defaulting to `open` on creation, nullable/optional
+`claimed_by` FK to `User`, `null=True`, defaulting to unset) and a
+`WeeklyCompletion` model (`chore` FK, `household` FK, `user` FK,
+`points_awarded` as a positive integer with the same `>0` validation,
+`week_start_date`, `completed_at` timestamp defaulting to creation time).
+`status` only ever tracks open/claimed at the model level — "completed" is
+not a stored status; completing a chore is represented by writing a
+`WeeklyCompletion` row and resetting the chore back to `open` (that reset
+behavior is built in task 11, not here).
+
+Set explicit `on_delete` behavior rather than leaving it to accident:
+`WeeklyCompletion.chore`, `.household`, and `.user` should use
+`on_delete=models.PROTECT`, since `WeeklyCompletion` is meant to be
+append-only history — the ORM must refuse to delete a `Chore`/`Household`/
+`User` that has completions attached rather than silently cascading them
+away. `Chore.claimed_by` should use `on_delete=models.SET_NULL` so removing
+a `User` clears a claim instead of deleting the `Chore` itself.
+
+Note that `WeeklyCompletion.household` is redundant with
+`WeeklyCompletion.chore.household` by design (it's denormalized for simpler
+querying later); a completion's `household` must always match its `chore`'s
+household — enforce this with model-level validation (e.g. a `clean()`
+override raising `ValidationError` on mismatch), not just as a convention
+that happens to hold when application code behaves. `points_awarded` is its
+own stored value, independent of `Chore.points`, so that editing a chore's
+point value later (task 15) never rewrites already-recorded history.
+
+Include migrations and tests asserting: a newly created `Chore` defaults to
+`status="open"` with no `claimed_by`; creating a `Chore` with `points=0` (or
+negative) fails validation, and likewise for `WeeklyCompletion.points_awarded`;
+creating a `Chore` with a `status` outside `open`/`claimed` fails validation;
+a `WeeklyCompletion` can be created with all fields and read back with the
+same values; a `WeeklyCompletion` created with a `household` that doesn't
+match its `chore`'s `household` is rejected; deleting a `Chore` (or
+`Household`/`User`) that has an associated `WeeklyCompletion` raises
+`ProtectedError` instead of cascading; and changing a `Chore`'s `points`
+after a `WeeklyCompletion` referencing it already exists leaves that
+completion's `points_awarded` unchanged.
 
 ## 4. Session-based "acting as" identity
 Goal: Let a browser session remember which `User` it's currently acting as.
-Description: Build a small helper (e.g. a context processor or utility
-functions) that reads/writes the current `User.id` from Django's session,
-with no `django.contrib.auth`/passwords involved. Add a guard (e.g. a
-decorator or mixin) that redirects to a "who are you" prompt when no identity
-is set. This is plumbing only — no UI for switching identities; that's built
-in the household switcher task. Test that setting and reading the session
-identity works and that an unset session triggers the redirect.
+Description: Add a small identity helper module (e.g. `chores/identity.py`)
+with two functions: `get_current_user(request)`, which reads
+`request.session["user_id"]` and returns the matching `User` instance, or
+`None` if the key is unset **or** if it references a `User` that no longer
+exists (clear the stale session key in that case rather than letting
+`User.DoesNotExist` propagate); and `set_current_user(request, user)`, which
+stores `user.id` under `request.session["user_id"]`. No
+`django.contrib.auth`/passwords are involved.
+
+Add a guard (e.g. a view decorator or class-based mixin) that wraps a view
+and, when `get_current_user(request)` returns `None`, redirects (302)
+instead of running the view. Since the real "who are you" prompt is built in
+tasks 5 and 6, add a minimal placeholder URL/view now purely as the guard's
+redirect target — e.g. a URL path `/identity/` named `choose_identity` that
+renders a stub page (any 200 response is fine); tasks 5 and 6 should extend
+or replace this same view rather than introduce a competing one. This task
+is plumbing only — no identity-switching UI (that's task 7).
+
+Include tests asserting: setting the session identity via `set_current_user`
+and reading it back via `get_current_user` returns the same `User`; a view
+wrapped in the guard redirects to the `choose_identity` URL when the session
+has no `user_id`; the same guarded view returns 200 (runs normally) once an
+identity is set on the session; and a session holding a `user_id` for a
+`User` that has since been deleted is treated the same as no identity set —
+`get_current_user` returns `None` and the guarded view redirects rather than
+raising an error.
 
 ## 5. Create a household
 Goal: Let a user start a new household with a shareable join code.
-Description: Build a view/form where a person enters a household name and
-their own display name, creates the `Household` (generating a unique
-`join_code`) and a matching `User` + `HouseholdMember`, and sets the session
-identity to that user. Test join-code generation for uniqueness and that the
-creator becomes a member.
+Description: Extend the `choose_identity` view/URL (`/identity/`, added in
+task 4 as the identity guard's redirect target) with a "create a household"
+form, rather than introducing a separate page — GET renders the empty form,
+POST processes the submission. A person enters a household name and their
+own display name; both are required and rejected (re-render the form with an
+error, no records created) if blank or whitespace-only after stripping. On a
+valid submission, create a `Household` with a generated `join_code` (e.g. a
+short random alphanumeric string — regenerate on collision rather than
+trusting randomness alone; the DB-level `unique=True` on `join_code` is the
+actual guarantee, but the view must retry rather than let a collision raise
+`IntegrityError` to the user), a matching `User` row holding the given
+display name, and a `HouseholdMember` row linking that user to that
+household, then call `set_current_user` (task 4) to make the new `User` the
+session's active identity, and redirect (302) to the chore pool (or whatever
+the current default landing view is) rather than re-rendering the form.
+Because this always creates a brand-new household, there is no existing
+member to collide names with — the case-insensitive within-household name
+uniqueness check only matters when *joining* an existing household (task 6),
+not here. This view must not itself be wrapped in the task 4 identity guard,
+since it's the guard's own redirect target — wrapping it would create a
+redirect loop for a session with no identity yet.
+
+Include tests asserting: submitting valid household/display names creates
+exactly one `Household`, one `User`, and one `HouseholdMember` linking that
+user to that household; the created `Household.join_code` is non-empty and
+matches whatever format the implementation defines; creating many households
+in a row never produces a duplicate `join_code`; after creation,
+`get_current_user(request)` returns the newly created `User` for that
+session; a successful submission responds with a redirect rather than
+re-rendering the form; and submitting a blank (or whitespace-only) household
+name or display name re-renders the form with an error and creates no
+`Household`, `User`, or `HouseholdMember` rows.
 
 ## 6. Join a household by code
 Goal: Let a new person join an existing household using its join code.
-Description: Build a view/form where a person enters a join code and a
-display name, validates the code exists, enforces that the name is not
-already taken in that household (case-insensitive), creates the `User` +
-`HouseholdMember`, and sets the session identity. Test the happy path, an
-invalid code, and a duplicate-name rejection.
+Description: Extend the same `choose_identity` view (`/identity/`, added in
+task 4 as the identity guard's redirect target and extended in task 5 with
+the "create a household" form) with a second form for joining an existing
+household, rather than introducing a separate page/URL — task 4 calls for
+tasks 5 and 6 to extend or replace this one view, not add competing ones.
+Both forms should be reachable from a GET to `/identity/`; a POST must be
+able to tell which form was submitted (e.g. distinct field names/a hidden
+action field) and route to the matching handler. A person enters a join code
+and their own display name; both are required and rejected (re-render the
+form with an error, no records created) if blank or whitespace-only after
+stripping.
+
+Match the submitted code against `Household.join_code` after stripping
+surrounding whitespace; matching is case-sensitive (join codes are opaque
+generated tokens, unlike display names, which is where case-insensitive
+matching applies). If no household has a matching `join_code`, re-render the
+form with an error and create no records. If the code matches, enforce that
+the stripped display name is not already used by an existing member of
+*that* household, case-insensitively (e.g. an existing member "Alice" blocks
+a new submission of "aLICE" or " alice "); this check is scoped to the
+target household only — the same name already belonging to a member of a
+*different* household must not block the join, since names are unique per
+household, not globally. On a valid submission, create a `User` row holding
+the given display name and a `HouseholdMember` row linking it to the
+matched (not newly created) `Household`, call `set_current_user` (task 4) to
+make the new `User` the session's active identity, and redirect (302) to the
+chore pool (or whatever the current default landing view is) rather than
+re-rendering the form. Like the create-household form, this view must not
+itself be wrapped in the task 4 identity guard, since it's the guard's own
+redirect target — wrapping it would create a redirect loop for a session
+with no identity yet.
+
+Include tests asserting: submitting a valid join code and a new display name
+creates exactly one `User` and one `HouseholdMember` linking that user to
+the household the code belongs to, and creates no new `Household`; after
+joining, `get_current_user(request)` returns the newly created `User` for
+that session; a successful submission responds with a redirect rather than
+re-rendering the form; submitting a join code that matches no `Household`
+re-renders the form with an error and creates no `User` or
+`HouseholdMember` row; submitting a blank (or whitespace-only) join code or
+display name re-renders the form with an error and creates no rows;
+submitting a display name that already belongs to another member of the
+target household, case-insensitively, re-renders the form with an error and
+creates no rows; and submitting a display name that already belongs to a
+member of a *different* household succeeds and creates the expected `User`
+and `HouseholdMember` rows (proving name uniqueness is per-household, not
+global).
 
 ## 7. Household switcher / switch person
 Goal: Let a person see and switch between all households (and identities)
-they hold, and let one browser demo multiple people.
-Description: Using the session identity helpers from task 4, build a view
-listing the households linked to the current session's identities (a person
-may have separate `User` rows per household) plus any other known identities
-for demo purposes, and a control to switch the active session identity to
-one of them. Test that switching correctly changes which household's data
-subsequent views operate on, and that switching to a different person's
-identity works the same way.
+this browser session has established, and let one browser demo multiple
+people by switching among only those identities — never any arbitrary user
+in the database.
+Description: A session only ever tracks one *active* identity
+(`request.session["user_id"]`, per task 4), so switching requires the
+session to also remember every identity it has *ever* acted as. Extend the
+`set_current_user(request, user)` helper from task 4 (the single choke point
+already called by task 5's create-household flow, task 6's join flow, and
+this task's own switch action) so that, in addition to setting
+`request.session["user_id"]`, it appends `user.id` to a list stored under a
+separate session key, e.g. `request.session["known_user_ids"]`, creating the
+list if absent and never adding a duplicate. This list is what makes a
+person's other households/identities discoverable later in the same
+browser — it must never be populated from, or expanded to include, `User`
+rows this session didn't itself create/join/switch to.
+
+Build a new view (e.g. `/switch/` named `switch_identity`), wrapped in the
+task 4 identity guard (a session with no active identity has nothing to
+switch from, so it should redirect to `/identity/` like any other guarded
+view). On GET, render one row per id in `known_user_ids` that still resolves
+to an existing `User` — drop ids that no longer resolve (a `User` deleted
+since being recorded) from what's displayed, mirroring the stale-reference
+handling `get_current_user` already does, rather than erroring — showing
+that user's display name and the `Household` they belong to (via
+`HouseholdMember`), with a form control to switch to it, and a visual
+indicator on whichever row matches the currently active `user_id`. A session
+whose `known_user_ids` contains only the current identity still renders
+successfully (a list of one, no other options), not an error.
+
+On POST, accept a submitted `user_id`. Reject it — re-render the list with an
+error and make no session change — if that `user_id` is not present in the
+session's own `known_user_ids`; this is the enforcement point that stops a
+crafted request from switching a session into somebody else's household
+without ever having gone through a join code, which would break household
+isolation. If the `user_id` is present and still resolves to an existing
+`User`, call `set_current_user(request, user)` to make it the active
+identity and redirect (302) to the chore pool (or whatever the current
+default landing view is).
+
+Include tests asserting: after creating a household (task 5) and then, in
+the same session, joining a second household (task 6), `known_user_ids`
+contains both identities and GET `/switch/` lists both households; switching
+to the second identity makes `get_current_user` return that user and scopes
+subsequent household-data views (e.g. chore pool) to the second household;
+switching back to the first identity restores the first household's scope;
+submitting a `user_id` belonging to a `User` from an entirely separate
+session/household (never joined or created by this session) is rejected —
+`get_current_user` is unchanged afterward and no redirect occurs; a session
+with exactly one known identity still returns 200 for GET `/switch/`; and a
+`known_user_ids` entry whose `User` has since been deleted is omitted from
+the rendered list instead of raising an error.
 
 ## 8. Chore pool view
 Goal: Show all open (unclaimed) chores for the active household.
-Description: Build a read-only view listing chores with `status="open"` for
-the current household, showing name, room, and point value. Assume the
-`Chore` model and session identity already exist. Test that only the active
-household's open chores appear, not other households' or claimed ones.
+Description: Build a read-only view (e.g. URL `/chores/` named `chore_pool`)
+wrapped in the task 4 identity guard, so a request with no active session
+identity redirects (302) to `/identity/` instead of rendering the pool.
+Assume the `Chore` model (task 3) and the session identity helpers/guard
+(task 4) already exist. For a signed-in session, resolve the active
+household via the current user's `HouseholdMember` row — each `User` row
+created by the create/join flows (tasks 5/6) belongs to exactly one
+household, so this lookup is unambiguous — then list `Chore` rows with
+`status="open"` for that household only, showing each chore's name, room,
+and point value. A household with zero open chores still renders 200 with
+an empty list/message rather than erroring. Order the results consistently
+(e.g. alphabetically by name) so a test can assert on exact list contents
+and order rather than an unordered set.
+
+Include tests asserting: an open chore belonging to the active household
+appears in the rendered list; a chore belonging to a different household is
+excluded even if it also has `status="open"`; a chore in the active
+household with `status="claimed"` is excluded; a household with no open
+chores renders 200 with an empty list rather than an error; and a request
+with no active session identity redirects to `/identity/` rather than
+rendering the pool.
 
 ## 9. Claim a chore
 Goal: Let the acting user claim an open chore.
-Description: Build an action (view + `fetch`-backed endpoint per the spec's
-JSON convention) that sets a chore's `status` to `claimed` and
-`claimed_by` to the current session user, only if it was previously open.
-Test that claiming an already-claimed chore is rejected and that claiming
-updates the chore correctly.
+Description: Build an action endpoint (e.g. POST `/chores/<id>/claim/`,
+named `claim_chore`) wrapped in the task 4 identity guard, so a request with
+no active session identity redirects (302) to `/identity/` rather than
+running. Resolve the active household via the current user's
+`HouseholdMember` row (same lookup as task 8). Look up the target `Chore`
+scoped to that household — a chore id belonging to a different household
+must be treated as not found (404), not claimed, even if it is `open`, so
+household isolation holds against a guessed/crafted id. If the chore exists
+in the active household and its `status` is `open`, set `status="claimed"`
+and `claimed_by` to the current session user, and return a JSON success
+response (e.g. `{"status": "claimed"}`) with a 200. If the chore is not
+`open` (already `claimed` by anyone, including the same user retrying),
+reject the claim — leave the chore unchanged and return a JSON error
+response with a 4xx status (e.g. 409) rather than silently succeeding or
+raising a server error. Only accept POST (or another mutating method) — a
+GET must not perform the claim, per the spec's `fetch`-backed JSON
+convention for dynamic interactions; reject non-POST requests with 405
+rather than allowing state changes via GET.
+
+Include tests asserting: POSTing to claim an open chore in the active
+household sets its `status` to `claimed` and `claimed_by` to the current
+user, confirmed by re-fetching the `Chore` from the DB; claiming a chore
+that is already `claimed` (by any user, including the requester) is
+rejected — the response is a 4xx error and the chore's `status`/`claimed_by`
+are unchanged; claiming a chore id that belongs to a different household
+returns 404 and leaves that chore unchanged, even if it is `open`; claiming
+a nonexistent chore id returns 404; a GET to the claim endpoint does not
+change the chore's `status` and returns a non-2xx response; and a request
+with no active session identity redirects to `/identity/` rather than
+performing the claim.
 
 ## 10. Release a claimed chore
 Goal: Let the claiming user put a chore back into the open pool.
-Description: Build an action that resets a chore's `status` to `open` and
-clears `claimed_by`, but only if the requester is the user who currently
-holds the claim. Test that a non-claiming user cannot release someone else's
-claim.
+Description: Build an action endpoint (e.g. POST `/chores/<id>/release/`,
+named `release_chore`) wrapped in the task 4 identity guard, so a request
+with no active session identity redirects (302) to `/identity/` rather than
+running. Resolve the active household via the current user's
+`HouseholdMember` row (same lookup as tasks 8 and 9). Look up the target
+`Chore` scoped to that household — a chore id belonging to a different
+household must be treated as not found (404), not released, even if it is
+`claimed`, so household isolation holds against a guessed/crafted id; a
+nonexistent chore id likewise returns 404.
+
+If the chore exists in the active household, its `status` is `claimed`, and
+`claimed_by` equals the current session user, set `status="open"` and
+`claimed_by=None`, and return a JSON success response (e.g.
+`{"status": "open"}`) with a 200. If the chore is `claimed` by a *different*
+user, reject the release — leave the chore unchanged and return a JSON error
+response with 403 (the requester doesn't hold this claim). If the chore is
+already `open` (not claimed by anyone), reject the release too — leave it
+unchanged and return a JSON error response with 409 (nothing to release),
+matching task 9's use of 409 for "not in the expected state" rather than
+treating it as a permissions problem. Only accept POST (or another mutating
+method) — a GET must not perform the release, per the spec's `fetch`-backed
+JSON convention for dynamic interactions; reject non-POST requests with 405
+rather than allowing state changes via GET.
+
+Include tests asserting: POSTing to release a chore claimed by the current
+user resets its `status` to `open` and `claimed_by` to `None`, confirmed by
+re-fetching the `Chore` from the DB; POSTing to release a chore claimed by a
+*different* member of the same household is rejected with 403 and leaves the
+chore's `status`/`claimed_by` unchanged; POSTing to release a chore that is
+already `open` (claimed by no one) is rejected with 409 and leaves the chore
+unchanged; releasing a chore id that belongs to a different household
+returns 404 and leaves that chore unchanged, even if it is `claimed`;
+releasing a nonexistent chore id returns 404; a GET to the release endpoint
+does not change the chore's `status` and returns a non-2xx (405) response;
+and a request with no active session identity redirects to `/identity/`
+rather than performing the release.
 
 ## 11. Complete a chore and award points
 Goal: Let the claiming user mark a chore done and award its points for the
 current week.
-Description: Build an action that, for a chore claimed by the current user,
-creates a `WeeklyCompletion` row (points, user, household, current
-Monday-start week, timestamp) and resets the chore back to `open` for the
-next cycle (chores are recurring, not deleted). Test that completing awards
-the right points, uses the correct week boundary, and that a non-claiming
-user can't complete someone else's claim.
+Description: Build an action endpoint (e.g. POST `/chores/<id>/complete/`,
+named `complete_chore`) wrapped in the task 4 identity guard, so a request
+with no active session identity redirects (302) to `/identity/` rather than
+running. Resolve the active household via the current user's
+`HouseholdMember` row (same lookup as tasks 8-10). Look up the target `Chore`
+scoped to that household — a chore id belonging to a different household
+must be treated as not found (404), not completed, even if it is `claimed`,
+so household isolation holds against a guessed/crafted id; a nonexistent
+chore id likewise returns 404.
+
+This task needs a way to compute "the current Monday-start week" before
+task 13 formally builds one, since a `WeeklyCompletion` row can't be written
+without a `week_start_date`. Add a small helper now (e.g. a
+`current_week_start()` function in a new `chores/weeks.py`, using
+`django.utils.timezone.localdate()` per the spec's "server local time" rule)
+that returns the date of the Monday on or before today. Task 13 should reuse
+this helper (and extend its tests across the Sunday-to-Monday boundary)
+rather than introduce a competing one.
+
+If the chore exists in the active household, its `status` is `claimed`, and
+`claimed_by` equals the current session user, create a `WeeklyCompletion`
+row with `chore`, `household`, `user` set to the current user,
+`points_awarded` set to a snapshot of the chore's *current* `points` value
+(per task 3, `points_awarded` is independent of `Chore.points` so later
+point-value edits never rewrite this record), `week_start_date` from
+`current_week_start()`, and `completed_at` defaulting to creation time; then
+reset the chore back to `status="open"` and `claimed_by=None` (chores are
+recurring — completing one never deletes it), leaving its `name`, `room`,
+and `points` unchanged. Return a JSON success response (e.g.
+`{"status": "completed", "points_awarded": <n>}`) with a 200.
+
+If the chore is `claimed` by a *different* user, reject the completion —
+create no `WeeklyCompletion` row, leave the chore unchanged, and return a
+JSON error response with 403 (the requester doesn't hold this claim). If the
+chore is already `open` (not claimed by anyone), reject the completion too —
+create no `WeeklyCompletion` row, leave the chore unchanged, and return a
+JSON error response with 409 (nothing to complete), matching tasks 9/10's use
+of 409 for "not in the expected state" rather than treating it as a
+permissions problem. Only accept POST (or another mutating method) — a GET
+must not perform the completion, per the spec's `fetch`-backed JSON
+convention for dynamic interactions; reject non-POST requests with 405
+rather than allowing state changes via GET.
+
+Include tests asserting: POSTing to complete a chore claimed by the current
+user creates exactly one `WeeklyCompletion` row with `points_awarded`
+matching the chore's `points` at completion time, `week_start_date` equal to
+the current Monday (`current_week_start()`), and `user`/`household` matching
+the current user/active household, confirmed by querying the DB; the same
+request resets the chore's `status` back to `open` and `claimed_by` to
+`None` (not deleted — the chore still exists) while its `name`/`room`/
+`points` are unchanged; completing a chore claimed by a *different* member
+of the same household is rejected with 403, creates no `WeeklyCompletion`
+row, and leaves the chore's `status`/`claimed_by` unchanged; completing a
+chore that is already `open` (claimed by no one) is rejected with 409,
+creates no `WeeklyCompletion` row, and leaves the chore unchanged; completing
+a chore id that belongs to a different household returns 404, creates no
+`WeeklyCompletion` row, and leaves that chore unchanged, even if it is
+`claimed`; completing a nonexistent chore id returns 404; changing a chore's
+`points` after completing it once (task 15 territory, but exercisable now
+via direct model edit in the test) does not change the already-recorded
+`WeeklyCompletion.points_awarded`; `current_week_start()` returns the same
+Monday date for every day Monday through Sunday of a given week and a date
+one day earlier (the prior Sunday) for the preceding week — i.e. it correctly
+straddles a Sunday-to-Monday boundary; a GET to the complete endpoint does
+not change the chore's `status`, creates no `WeeklyCompletion` row, and
+returns a non-2xx (405) response; and a request with no active session
+identity redirects to `/identity/` rather than performing the completion.
 
 ## 12. Points board view
 Goal: Show each household member's point total for the current week.
-Description: Build a read-only view that sums `WeeklyCompletion.points_awarded`
-per user for the household's current `week_start_date` (Monday–Sunday) and
-displays a simple leaderboard/table. Test that totals are scoped to the
-current household and current week only.
+Description: Build a read-only view (e.g. URL `/points/` named
+`points_board`) wrapped in the task 4 identity guard, so a request with no
+active session identity redirects (302) to `/identity/` instead of rendering
+the board. Assume the `WeeklyCompletion` model (task 3), the session
+identity helpers/guard (task 4), and the `current_week_start()` helper
+(`chores/weeks.py`, task 11) already exist — task 13 will formally own
+week-boundary logic, but this task can rely on `current_week_start()` as it
+stands now. Resolve the active household via the current user's
+`HouseholdMember` row (same lookup as tasks 8-11), then, for every `User`
+who is a member of that household (via `HouseholdMember`), sum
+`WeeklyCompletion.points_awarded` where `household` matches the active
+household and `week_start_date` equals `current_week_start()`, grouped by
+`user`.
+
+A member of the active household with zero completions this week must still
+appear on the board with a total of `0`, not be omitted — the point of the
+board is to surface imbalance, including "did nothing this week." Order the
+results consistently (e.g. descending by total, ties broken alphabetically
+by name) so a test can assert on exact list contents and order rather than
+an unordered set. A household with no members other than the current user
+still renders 200 with that one member's total (`0` if they have no
+completions yet) rather than erroring.
+
+Include tests asserting: a user with one completed chore this week
+(`points_awarded=n`) shows a total of `n` on the board; a user with multiple
+completed chores this week shows the sum of their `points_awarded` values;
+a member of the active household with no completions this week appears on
+the board with a total of `0` rather than being omitted; a
+`WeeklyCompletion` belonging to a different household is excluded from
+every total, even if it was awarded to a user with the same display name or
+the same underlying real-world person acting under a different `User` row
+in another household (task 7) — household isolation must hold; a
+`WeeklyCompletion` in the active household but from a *previous*
+`week_start_date` is excluded from the current total (it doesn't leak into
+"this week"'s sum); a `WeeklyCompletion` dated for a *future* week (an edge
+case beyond normal use — e.g. a test fixture simulating clock skew) is
+likewise excluded, since only `week_start_date == current_week_start()`
+should count; and a request with no active session identity redirects to
+`/identity/` rather than rendering the board.
+
+---
+
+**Tasks 13 and below have not been groomed yet** — they still reflect the
+original backlog language and will be reviewed for checkable acceptance
+criteria and edge cases when their turn comes up.
+
+---
 
 ## 13. Weekly rollover
 Goal: Reset point totals for a new week without losing history or chores.
@@ -147,3 +492,55 @@ board, history, settings, household switcher) that other view templates
 extend, plus minimal shared CSS. No new backend logic — this is purely
 wiring existing views into a coherent layout. Manually click through each
 linked page to confirm navigation works.
+
+## 18. Show join code immediately after creating a household
+Goal: Let a household's creator see and copy the join code right away,
+without having to first navigate to settings.
+Description: After a household is created (task 5) and the session redirects
+to the chore pool, surface the new `join_code` somewhere immediately visible
+to the creator — e.g. a one-time confirmation banner or interstitial page
+shown right after creation — distinct from the permanent join-code display
+built in household settings (task 16). Test that the code shown immediately
+after creation matches the household's stored `join_code`.
+
+## 19. Link from the household switcher to create/join another household
+Goal: Let someone already viewing the switcher (task 7) add a new household
+or identity to the current browser session without navigating there by hand.
+Description: Add a link/button on the `switch_identity` view (task 7) to the
+`/identity/` view (tasks 4–6's create/join forms), so a person who already
+holds one or more identities in this session can create a new household or
+join another one and have it added to their `known_user_ids` alongside their
+existing identities, rather than needing to know the `/identity/` URL
+directly. Since `/identity/` is the task 4 guard's redirect target and isn't
+itself guarded, visiting it with an existing active identity must not clear
+or replace that identity or its entry in `known_user_ids` — it should only
+add a new one on a successful create/join submission. Test that following
+the link from the switcher, then creating (or joining) a household, results
+in `known_user_ids` containing the original identity plus the newly created
+one, and that the switcher now lists both.
+
+## 20. My claimed chores view
+Goal: Let a member see the chores they've personally claimed but not yet
+completed.
+Description: `_docs/plan.md` lists "My claimed chores" as one of the
+minimum views, but no existing task builds it — tasks 9-11 only cover the
+claim/release/complete *actions*, not a page listing a member's own claims.
+Build a read-only view (e.g. URL `/chores/mine/` named `my_claimed_chores`)
+wrapped in the task 4 identity guard, so a request with no active session
+identity redirects (302) to `/identity/` instead of rendering the list.
+Resolve the active household via the current user's `HouseholdMember` row,
+same as task 8, then list `Chore` rows with `status="claimed"` and
+`claimed_by` equal to the current session user, scoped to that household,
+showing each chore's name, room, and point value. A chore claimed by a
+different member of the same household must not appear, even though it
+shares the household — this view is scoped to "claimed by me," not "claimed
+by anyone." A user with no active claims still renders 200 with an empty
+list/message rather than erroring.
+
+Include tests asserting: a chore claimed by the current user appears in the
+rendered list; a chore claimed by a different user in the same household is
+excluded; a chore claimed by the current session's *other* identity in a
+different household (per task 7's multi-household switching) is excluded;
+an open (unclaimed) chore in the active household is excluded; and a
+request with no active session identity redirects to `/identity/` rather
+than rendering the list.
