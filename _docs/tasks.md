@@ -69,7 +69,7 @@ match its `chore`'s `household` is rejected; deleting a `Chore` (or
 after a `WeeklyCompletion` referencing it already exists leaves that
 completion's `points_awarded` unchanged.
 
-## 4. Session-based "acting as" identity
+## 4. Session-based "acting as" identity — Completed 2026-09-07 13:45 PDT
 Goal: Let a browser session remember which `User` it's currently acting as.
 Description: Add a small identity helper module (e.g. `chores/identity.py`)
 with two functions: `get_current_user(request)`, which reads
@@ -86,19 +86,32 @@ instead of running the view. Since the real "who are you" prompt is built in
 tasks 5 and 6, add a minimal placeholder URL/view now purely as the guard's
 redirect target — e.g. a URL path `/identity/` named `choose_identity` that
 renders a stub page (any 200 response is fine); tasks 5 and 6 should extend
-or replace this same view rather than introduce a competing one. This task
-is plumbing only — no identity-switching UI (that's task 7).
+or replace this same view rather than introduce a competing one. This
+placeholder view must not itself be wrapped in the guard — since it's the
+guard's own redirect target, guarding it would create a redirect loop for a
+session with no identity — so it must return 200 on GET regardless of
+whether a session identity is currently set. This task is plumbing only —
+no identity-switching UI (that's task 7). No other view in the app is
+wrapped in the guard yet (task 8 builds the first real one), so test the
+guard itself against a minimal dummy view defined for test purposes only
+(e.g. inline in the test module via `RequestFactory`, or a view wrapped in
+the guard directly within the test file) rather than adding a throwaway
+production URL to `chores/urls.py`.
 
 Include tests asserting: setting the session identity via `set_current_user`
 and reading it back via `get_current_user` returns the same `User`; a view
 wrapped in the guard redirects to the `choose_identity` URL when the session
 has no `user_id`; the same guarded view returns 200 (runs normally) once an
-identity is set on the session; and a session holding a `user_id` for a
-`User` that has since been deleted is treated the same as no identity set —
-`get_current_user` returns `None` and the guarded view redirects rather than
-raising an error.
+identity is set on the session; a session holding a `user_id` for a `User`
+that has since been deleted is treated the same as no identity set —
+`get_current_user` returns `None`, the stale `user_id` key is actually
+removed from `request.session` (not merely ignored on this call), and the
+guarded view redirects rather than raising an error; and GET `/identity/`
+itself returns 200 both when the session has no identity set and when one
+is already set, confirming the placeholder view is reachable regardless of
+guard state rather than redirecting to itself.
 
-## 5. Create a household
+## 5. Create a household — Completed 2026-09-07 13:52 PDT
 Goal: Let a user start a new household with a shareable join code.
 Description: Extend the `choose_identity` view/URL (`/identity/`, added in
 task 4 as the identity guard's redirect target) with a "create a household"
@@ -106,34 +119,59 @@ form, rather than introducing a separate page — GET renders the empty form,
 POST processes the submission. A person enters a household name and their
 own display name; both are required and rejected (re-render the form with an
 error, no records created) if blank or whitespace-only after stripping. On a
-valid submission, create a `Household` with a generated `join_code` (e.g. a
-short random alphanumeric string — regenerate on collision rather than
-trusting randomness alone; the DB-level `unique=True` on `join_code` is the
-actual guarantee, but the view must retry rather than let a collision raise
-`IntegrityError` to the user), a matching `User` row holding the given
-display name, and a `HouseholdMember` row linking that user to that
-household, then call `set_current_user` (task 4) to make the new `User` the
-session's active identity, and redirect (302) to the chore pool (or whatever
-the current default landing view is) rather than re-rendering the form.
-Because this always creates a brand-new household, there is no existing
-member to collide names with — the case-insensitive within-household name
-uniqueness check only matters when *joining* an existing household (task 6),
-not here. This view must not itself be wrapped in the task 4 identity guard,
-since it's the guard's own redirect target — wrapping it would create a
-redirect loop for a session with no identity yet.
+valid submission, save the *stripped* values (not the raw submitted strings)
+as `Household.name` and `User.name`, so surrounding whitespace never gets
+baked into a stored name — this matters because task 6's join flow later
+compares a new submission's stripped name against these stored names
+case-insensitively, and a stored name with leftover padding would silently
+break that comparison. Create a `Household` with a generated `join_code`
+(e.g. a short random alphanumeric string — regenerate on collision rather
+than trusting randomness alone; the DB-level `unique=True` on `join_code` is
+the actual guarantee, but `Household` does not override `save()` to
+pre-validate uniqueness the way `Chore`/`WeeklyCompletion`/`HouseholdMember`
+do, so a colliding `join_code` surfaces as `IntegrityError` on save, not a
+friendlier `ValidationError` — the view must catch this and retry with a
+freshly generated code rather than letting it propagate to the user; wrap
+the create-and-retry logic in `django.db.transaction.atomic()` so a caught
+`IntegrityError` doesn't leave the surrounding transaction unusable, which
+matters under Django's `TestCase`, where each test already runs inside its
+own transaction), a matching `User` row holding the display name, and a
+`HouseholdMember` row linking that user to that household, then call
+`set_current_user` (task 4) to make the new `User` the session's active
+identity, and redirect (302) to a concrete landing target that actually
+exists today — since the chore pool (task 8) hasn't been built yet, redirect
+to the existing health-check URL (name `"health"`, from task 1) as an
+interim stand-in rather than reversing a not-yet-existent `chore_pool` URL
+name, which would raise `NoReverseMatch`; task 8 should update this redirect
+(and tasks 6/7/12's equivalent placeholder redirects) to point at the real
+chore pool once it exists — rather than re-rendering the form. Because this
+always creates a brand-new household, there is no existing member to
+collide names with — the case-insensitive within-household name uniqueness
+check only matters when *joining* an existing household (task 6), not here.
+This view must not itself be wrapped in the task 4 identity guard, since
+it's the guard's own redirect target — wrapping it would create a redirect
+loop for a session with no identity yet.
 
 Include tests asserting: submitting valid household/display names creates
 exactly one `Household`, one `User`, and one `HouseholdMember` linking that
 user to that household; the created `Household.join_code` is non-empty and
 matches whatever format the implementation defines; creating many households
-in a row never produces a duplicate `join_code`; after creation,
+in a row never produces a duplicate `join_code`; submitting a household name
+or display name with leading/trailing whitespace around otherwise-valid
+content stores the stripped value on `Household.name`/`User.name`, not the
+raw padded string; forcing a `join_code` collision (e.g. by monkeypatching
+the code-generation function so its first call returns an already-used code
+and its second call returns a fresh one) still results in exactly one new
+`Household` being created with a unique `join_code`, rather than an
+`IntegrityError` propagating to the caller; after creation,
 `get_current_user(request)` returns the newly created `User` for that
-session; a successful submission responds with a redirect rather than
+session; a successful submission responds with a 302 redirect to the
+`health` URL (today's interim landing target, per above) rather than
 re-rendering the form; and submitting a blank (or whitespace-only) household
 name or display name re-renders the form with an error and creates no
 `Household`, `User`, or `HouseholdMember` rows.
 
-## 6. Join a household by code
+## 6. Join a household by code — Completed 2026-09-07 14:05 PDT
 Goal: Let a new person join an existing household using its join code.
 Description: Extend the same `choose_identity` view (`/identity/`, added in
 task 4 as the identity guard's redirect target and extended in task 5 with
@@ -183,7 +221,7 @@ member of a *different* household succeeds and creates the expected `User`
 and `HouseholdMember` rows (proving name uniqueness is per-household, not
 global).
 
-## 7. Household switcher / switch person
+## 7. Household switcher / switch person — Completed 2026-09-07 14:20 PDT
 Goal: Let a person see and switch between all households (and identities)
 this browser session has established, and let one browser demo multiple
 people by switching among only those identities — never any arbitrary user
@@ -214,30 +252,44 @@ indicator on whichever row matches the currently active `user_id`. A session
 whose `known_user_ids` contains only the current identity still renders
 successfully (a list of one, no other options), not an error.
 
-On POST, accept a submitted `user_id`. Reject it — re-render the list with an
-error and make no session change — if that `user_id` is not present in the
-session's own `known_user_ids`; this is the enforcement point that stops a
-crafted request from switching a session into somebody else's household
-without ever having gone through a join code, which would break household
-isolation. If the `user_id` is present and still resolves to an existing
-`User`, call `set_current_user(request, user)` to make it the active
-identity and redirect (302) to the chore pool (or whatever the current
-default landing view is).
+On POST, accept a submitted `user_id`. Session-stored ids in `known_user_ids`
+are ints, but Django POST data arrives as strings, so parse the submitted
+value to an int before comparing; treat a non-numeric submission the same as
+"not present" (reject, don't raise). Reject it — re-render the list with an
+error and make no session change — if that `user_id` (as an int) is not
+present in the session's own `known_user_ids`; this is the enforcement point
+that stops a crafted request from switching a session into somebody else's
+household without ever having gone through a join code, which would break
+household isolation. If the `user_id` is present and still resolves to an
+existing `User`, call `set_current_user(request, user)` to make it the
+active identity and redirect (302) to a concrete landing target that
+actually exists today — since the chore pool (task 8) hasn't been built yet,
+redirect to the existing health-check URL (name `"health"`, per tasks 5/6's
+same interim stand-in) rather than reversing a not-yet-existent `chore_pool`
+URL name, which would raise `NoReverseMatch`; task 8 should update this
+redirect once the chore pool exists.
 
 Include tests asserting: after creating a household (task 5) and then, in
 the same session, joining a second household (task 6), `known_user_ids`
 contains both identities and GET `/switch/` lists both households; switching
-to the second identity makes `get_current_user` return that user and scopes
-subsequent household-data views (e.g. chore pool) to the second household;
-switching back to the first identity restores the first household's scope;
-submitting a `user_id` belonging to a `User` from an entirely separate
-session/household (never joined or created by this session) is rejected —
-`get_current_user` is unchanged afterward and no redirect occurs; a session
-with exactly one known identity still returns 200 for GET `/switch/`; and a
-`known_user_ids` entry whose `User` has since been deleted is omitted from
-the rendered list instead of raising an error.
+to the second identity makes `get_current_user` return that user and that
+user's `HouseholdMember` row resolves to the second household (proving the
+active identity's household scope changed, without depending on the
+not-yet-built chore pool view); switching back to the first identity makes
+`get_current_user` return the first user again with their `HouseholdMember`
+row resolving back to the first household; switching to an identity already
+present in `known_user_ids` a second time does not append a duplicate entry
+(the list's length and contents are unchanged); submitting a `user_id`
+belonging to a `User` from an entirely separate session/household (never
+joined or created by this session) is rejected — `get_current_user` is
+unchanged afterward and no redirect occurs; submitting a non-numeric
+`user_id` (e.g. a string that isn't a valid id) is rejected the same way,
+without raising a server error; a session with exactly one known identity
+still returns 200 for GET `/switch/`; and a `known_user_ids` entry whose
+`User` has since been deleted is omitted from the rendered list instead of
+raising an error.
 
-## 8. Chore pool view
+## 8. Chore pool view — Completed 2026-09-07 14:35 PDT
 Goal: Show all open (unclaimed) chores for the active household.
 Description: Build a read-only view (e.g. URL `/chores/` named `chore_pool`)
 wrapped in the task 4 identity guard, so a request with no active session
@@ -250,16 +302,36 @@ household, so this lookup is unambiguous — then list `Chore` rows with
 `status="open"` for that household only, showing each chore's name, room,
 and point value. A household with zero open chores still renders 200 with
 an empty list/message rather than erroring. Order the results consistently
-(e.g. alphabetically by name) so a test can assert on exact list contents
-and order rather than an unordered set.
+by name (e.g. `order_by("name", "id")`) so a test can assert on exact list
+contents and order rather than an unordered set — `Chore.name` has no
+uniqueness constraint (unlike `User.name`), so two open chores in the same
+household can share a name; break ties by `id` (creation order) so the
+ordering stays deterministic even then.
+
+This task also retires the three interim `redirect("health")` stand-ins left
+by tasks 5, 6, and 7 for exactly this reason — each of those tasks'
+descriptions says outright that task 8 should update its redirect once the
+real chore pool exists. Update all three redirect targets to
+`redirect("chore_pool")` now that the URL exists: the create-household
+handler (`_handle_create`, task 5), the join-household handler
+(`_handle_join`, task 6), and `switch_identity`'s POST success path (task 7).
+Update those three tasks' existing tests that assert a redirect to the
+`health` URL so they instead assert a redirect to `chore_pool` — this task
+isn't complete until no view redirects to `health` as a stand-in landing
+target anymore (the `health` URL itself, task 1's placeholder, is untouched
+and can remain for its own health-check purpose).
 
 Include tests asserting: an open chore belonging to the active household
 appears in the rendered list; a chore belonging to a different household is
 excluded even if it also has `status="open"`; a chore in the active
 household with `status="claimed"` is excluded; a household with no open
-chores renders 200 with an empty list rather than an error; and a request
-with no active session identity redirects to `/identity/` rather than
-rendering the pool.
+chores renders 200 with an empty list rather than an error; a request with
+no active session identity redirects to `/identity/` rather than rendering
+the pool; two open chores in the active household sharing the same `name`
+still render in a deterministic order (e.g. by ascending `id`) across
+repeated requests; and, updated in this task, that creating a household
+(task 5), joining a household (task 6), and switching identity (task 7)
+each redirect to `chore_pool` rather than `health` on success.
 
 ## 9. Claim a chore
 Goal: Let the acting user claim an open chore.
