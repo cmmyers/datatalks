@@ -1,4 +1,3 @@
-from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
@@ -69,12 +68,14 @@ def _handle_join(request):
     if household is None:
         return "No household found for that join code."
 
-    user = User.objects.create(name=display_name)
-    try:
-        HouseholdMember.objects.create(user=user, household=household)
-    except ValidationError:
-        user.delete()
+    conflict = HouseholdMember.objects.filter(
+        household=household, user__name__iexact=display_name
+    ).exists()
+    if conflict:
         return f"A member named '{display_name}' already exists in that household."
+
+    user = User.objects.create(name=display_name)
+    HouseholdMember.objects.create(user=user, household=household)
 
     set_current_user(request, user)
     return None
