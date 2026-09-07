@@ -1,10 +1,13 @@
 import datetime
 
+from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import ProtectedError
-from django.test import TestCase
+from django.http import HttpResponse
+from django.test import RequestFactory, TestCase
 
+from chores.identity import get_current_user, require_identity, set_current_user
 from chores.models import Chore, Household, HouseholdMember, User, WeeklyCompletion
 
 
@@ -215,3 +218,98 @@ class WeeklyCompletionModelTests(TestCase):
 
         completion.refresh_from_db()
         self.assertEqual(completion.points_awarded, 5)
+
+
+@require_identity
+def _dummy_guarded_view(request):
+    return HttpResponse("OK")
+
+
+def _make_request(path="/dummy/"):
+    """Build a request with a real, working session attached."""
+    factory = RequestFactory()
+    request = factory.get(path)
+    SessionMiddleware(lambda req: None).process_request(request)
+    request.session.save()
+    return request
+
+
+class IdentityHelperTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+    def test_set_then_get_current_user_round_trips(self):
+        request = _make_request()
+        set_current_user(request, self.user)
+
+        fetched = get_current_user(request)
+
+        self.assertEqual(fetched, self.user)
+
+    def test_get_current_user_returns_none_when_unset(self):
+        request = _make_request()
+
+        self.assertIsNone(get_current_user(request))
+
+    def test_stale_user_id_is_removed_from_session(self):
+        request = _make_request()
+        request.session["user_id"] = self.user.id
+        self.user.delete()
+
+        result = get_current_user(request)
+
+        self.assertIsNone(result)
+        self.assertNotIn("user_id", request.session)
+
+
+class RequireIdentityGuardTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+    def test_guarded_view_redirects_when_no_identity_set(self):
+        request = _make_request()
+
+        response = _dummy_guarded_view(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+    def test_guarded_view_returns_200_when_identity_set(self):
+        request = _make_request()
+        set_current_user(request, self.user)
+
+        response = _dummy_guarded_view(request)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_guarded_view_redirects_for_stale_user_id_without_raising(self):
+        request = _make_request()
+        request.session["user_id"] = self.user.id
+        self.user.delete()
+
+        response = _dummy_guarded_view(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+
+class ChooseIdentityViewTests(TestCase):
+    def test_returns_200_with_no_session_identity(self):
+        response = self.client.get("/identity/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_returns_200_with_session_identity_set(self):
+        household = Household.objects.create(name="Smith House")
+        user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=user, household=household)
+
+        session = self.client.session
+        session["user_id"] = user.id
+        session.save()
+
+        response = self.client.get("/identity/")
+        self.assertEqual(response.status_code, 200)
