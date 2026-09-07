@@ -1,6 +1,6 @@
 from django.db import IntegrityError, transaction
-from django.http import HttpResponse
-from django.shortcuts import redirect, render
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
 
 from .identity import get_current_user, require_identity, set_current_user
 from .models import Chore, Household, HouseholdMember, User, generate_join_code
@@ -157,6 +157,35 @@ def chore_pool(request):
     )
 
     return render(request, "chores/chore_pool.html", {"chores": chores})
+
+
+@require_identity
+def claim_chore(request, chore_id):
+    # Action endpoint: claim an open chore for the current session's active
+    # identity. Wrapped in the task 4 identity guard, so a session with no
+    # active identity redirects to /identity/ instead of running. Only POST
+    # (or another mutating method) performs the claim; a GET returns 405.
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed."}, status=405)
+
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    # Household filter is part of the query itself, not a Python check
+    # applied after fetching by id, so isolation holds structurally: a
+    # chore id belonging to a different household is indistinguishable
+    # from a nonexistent one (404).
+    chore = get_object_or_404(Chore, id=chore_id, household=household)
+
+    if chore.status != Chore.STATUS_OPEN:
+        return JsonResponse({"error": "Chore is not open."}, status=409)
+
+    chore.status = Chore.STATUS_CLAIMED
+    chore.claimed_by = current_user
+    chore.save()
+
+    return JsonResponse({"status": "claimed"})
 
 
 def _create_household_with_retry(name):

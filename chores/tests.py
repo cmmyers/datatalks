@@ -763,3 +763,118 @@ class IndexViewTests(TestCase):
         self.assertEqual(
             list(self.client.session["known_user_ids"]), before_known_user_ids
         )
+
+
+class ClaimChoreViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_user = User.objects.create(name="Jamie")
+        HouseholdMember.objects.create(user=self.other_user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def _claim_url(self, chore_id):
+        return f"/chores/{chore_id}/claim/"
+
+    def test_claiming_open_chore_sets_status_and_claimed_by(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(self._claim_url(chore.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "claimed"})
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+        self.assertEqual(chore.claimed_by, self.user)
+
+    def test_claiming_already_claimed_chore_is_rejected(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.other_user,
+        )
+
+        response = self.client.post(self._claim_url(chore.id))
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("error", response.json())
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+        self.assertEqual(chore.claimed_by, self.other_user)
+
+    def test_claiming_chore_already_claimed_by_requester_is_rejected(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.post(self._claim_url(chore.id))
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("error", response.json())
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+        self.assertEqual(chore.claimed_by, self.user)
+
+    def test_claiming_chore_in_different_household_returns_404(self):
+        chore = Chore.objects.create(
+            household=self.other_household, name="Laundry", room="Bathroom", points=3
+        )
+
+        response = self.client.post(self._claim_url(chore.id))
+
+        self.assertEqual(response.status_code, 404)
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_OPEN)
+        self.assertIsNone(chore.claimed_by)
+
+    def test_claiming_nonexistent_chore_returns_404(self):
+        response = self.client.post(self._claim_url(99999))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_request_does_not_claim_and_returns_405(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.get(self._claim_url(chore.id))
+
+        self.assertEqual(response.status_code, 405)
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_OPEN)
+
+    def test_no_active_identity_redirects_to_identity(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        fresh_client = Client()
+        response = fresh_client.post(self._claim_url(chore.id))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_OPEN)

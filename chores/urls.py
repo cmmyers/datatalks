@@ -8,4 +8,5 @@ urlpatterns = [
     path("identity/", views.choose_identity, name="choose_identity"),
     path("switch/", views.switch_identity, name="switch_identity"),
     path("chores/", views.chore_pool, name="chore_pool"),
+    path("chores/<int:chore_id>/claim/", views.claim_chore, name="claim_chore"),
 ]
