@@ -333,7 +333,7 @@ repeated requests; and, updated in this task, that creating a household
 (task 5), joining a household (task 6), and switching identity (task 7)
 each redirect to `chore_pool` rather than `health` on success.
 
-## 9. Home page with navigation at "/"
+## 9. Home page with navigation at "/" — Completed 2026-09-07 14:50 PDT
 Goal: Give the app a real landing page at the root URL with links to what's
 built so far, instead of the root just being the task 1 health-check stub.
 Description: Move the task 1 health-check view off the root path — keep it
@@ -375,38 +375,69 @@ mutate session state (e.g. does not add to `known_user_ids` or change the
 active identity) — it's read-only navigation, not an identity-changing
 action.
 
-## 10. Claim a chore
+## 10. Claim a chore — Completed 2026-09-07 15:05 PDT
 Goal: Let the acting user claim an open chore.
 Description: Build an action endpoint (e.g. POST `/chores/<id>/claim/`,
 named `claim_chore`) wrapped in the task 4 identity guard, so a request with
 no active session identity redirects (302) to `/identity/` rather than
 running. Resolve the active household via the current user's
 `HouseholdMember` row (same lookup as task 8). Look up the target `Chore`
-scoped to that household — a chore id belonging to a different household
-must be treated as not found (404), not claimed, even if it is `open`, so
-household isolation holds against a guessed/crafted id. If the chore exists
-in the active household and its `status` is `open`, set `status="claimed"`
-and `claimed_by` to the current session user, and return a JSON success
-response (e.g. `{"status": "claimed"}`) with a 200. If the chore is not
-`open` (already `claimed` by anyone, including the same user retrying),
-reject the claim — leave the chore unchanged and return a JSON error
-response with a 4xx status (e.g. 409) rather than silently succeeding or
-raising a server error. Only accept POST (or another mutating method) — a
-GET must not perform the claim, per the spec's `fetch`-backed JSON
-convention for dynamic interactions; reject non-POST requests with 405
-rather than allowing state changes via GET.
+with a single query filtered by both id and household — e.g.
+`get_object_or_404(Chore, id=chore_id, household=household)` — rather than
+fetching by id alone and checking `chore.household == household` afterward
+in Python; the household filter must be enforced by the query itself so
+isolation holds structurally, not merely as an observed side effect of code
+that happens to check it today. A chore id belonging to a different
+household must be treated as not found (404), not claimed, even if it is
+`open`, so household isolation holds against a guessed/crafted id. If the
+chore exists in the active household and its `status` is `open`, set `status="claimed"`
+and `claimed_by` to the current session user, and return a 200 with a JSON
+body of exactly `{"status": "claimed"}` — this is the first view in the app
+to return JSON (no existing view in `chores/views.py` does yet, and
+`_docs/plan.md` doesn't mandate a specific shape beyond "JSON for the
+fetch-driven interactions"), and tasks 11 (release) and 12 (complete) are
+described as following this same pattern, so fixing a concrete, testable
+shape here — rather than leaving it as a loose example — is what keeps all
+three consistent. If the chore is not `open` (already `claimed` by anyone,
+including the same user retrying), reject the claim — leave the chore
+unchanged and return a 409 with a JSON body containing an `"error"` key
+(the exact message text is not prescribed and need not be asserted by
+tests) rather than silently succeeding or raising a server error. Only
+accept POST (or another mutating method) — a GET must not perform the
+claim, per the spec's `fetch`-backed JSON convention for dynamic
+interactions; reject non-POST requests with 405 rather than allowing state
+changes via GET.
+
+The request needs no body/payload beyond what's already in the URL and the
+session — the chore id comes from the URL path and the acting user from
+`get_current_user(request)`, so a bare POST with an empty body is
+sufficient and the view must not require or parse any POST data fields.
+Like every other POST view in this app, this endpoint is protected by
+Django's `CsrfViewMiddleware` (already active in `settings.py`) and must
+not be marked `csrf_exempt`; Django's test client satisfies this
+automatically for the tests below (`enforce_csrf_checks` defaults to
+`False`), so no special test setup is needed here — a real browser
+`fetch()` call will need to send the CSRF token itself, which is a
+frontend-wiring concern for whichever later task first adds a clickable
+claim button to a template — no task currently on the backlog owns that
+wiring explicitly, since tasks 10-12 build the JSON endpoints themselves
+and the template tasks (16, 18) don't mention hooking buttons up to them;
+worth flagging to the user as a possible backlog gap rather than silently
+assuming it's covered.
 
 Include tests asserting: POSTing to claim an open chore in the active
-household sets its `status` to `claimed` and `claimed_by` to the current
-user, confirmed by re-fetching the `Chore` from the DB; claiming a chore
-that is already `claimed` (by any user, including the requester) is
-rejected — the response is a 4xx error and the chore's `status`/`claimed_by`
-are unchanged; claiming a chore id that belongs to a different household
-returns 404 and leaves that chore unchanged, even if it is `open`; claiming
-a nonexistent chore id returns 404; a GET to the claim endpoint does not
-change the chore's `status` and returns a non-2xx response; and a request
-with no active session identity redirects to `/identity/` rather than
-performing the claim.
+household with an empty body sets its `status` to `claimed` and
+`claimed_by` to the current user, confirmed by re-fetching the `Chore` from
+the DB (no payload beyond the URL/session is required), and the response
+body is exactly `{"status": "claimed"}` with a 200; claiming a chore that is
+already `claimed` (by any user, including the requester) is rejected — the
+response is 409 with a JSON body containing an `"error"` key, and the
+chore's `status`/`claimed_by` are unchanged; claiming a chore id that
+belongs to a different household returns 404 and leaves that chore
+unchanged, even if it is `open`; claiming a nonexistent chore id returns
+404; a GET to the claim endpoint does not change the chore's `status` and
+returns a non-2xx (405) response; and a request with no active session
+identity redirects to `/identity/` rather than performing the claim.
 
 ## 11. Release a claimed chore
 Goal: Let the claiming user put a chore back into the open pool.
