@@ -5,7 +5,7 @@ Tasks for building the Household Chore Tracker described in
 handed off without needing to read the others — background/spec references
 are repeated where useful rather than assumed.
 
-## 1. Project setup with an empty passing test
+## 1. Project setup with an empty passing test — Completed 2026-09-07
 Goal: Get a runnable Django project skeleton with one green test.
 Description: Confirm/initialize the Django project (`choretracker`) and a
 `chores` app, wire the app into `INSTALLED_APPS`, and add a placeholder URL
