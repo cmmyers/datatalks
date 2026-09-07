@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import ProtectedError
 from django.http import HttpResponse
-from django.test import RequestFactory, TestCase
+from django.test import Client, RequestFactory, TestCase
 
 from chores.identity import get_current_user, require_identity, set_current_user
 from chores.models import Chore, Household, HouseholdMember, User, WeeklyCompletion
@@ -532,3 +532,115 @@ class JoinHouseholdViewTests(TestCase):
         new_user = User.objects.get(name="Jamie")
         membership = HouseholdMember.objects.get(user=new_user)
         self.assertEqual(membership.household, self.household)
+
+
+class SwitchIdentityViewTests(TestCase):
+    def setUp(self):
+        # Create a household (task 5), then join a second one (task 6) in
+        # the same session, so this session's known_user_ids ends up
+        # holding two identities across two households.
+        self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+        self.household1 = Household.objects.get(name="Smith House")
+        self.user1 = User.objects.get(name="Alex")
+
+        self.household2 = Household.objects.create(name="Jones House", join_code="JOIN2")
+        self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOIN2", "display_name": "Jamie"},
+        )
+        self.user2 = User.objects.get(name="Jamie")
+
+    def test_known_user_ids_contains_both_identities_after_create_and_join(self):
+        known_user_ids = self.client.session["known_user_ids"]
+        self.assertCountEqual(known_user_ids, [self.user1.id, self.user2.id])
+
+    def test_get_switch_lists_both_households(self):
+        response = self.client.get("/switch/")
+
+        self.assertEqual(response.status_code, 200)
+        identities = response.context["identities"]
+        rendered = {entry["user"].id: entry["household"] for entry in identities}
+        self.assertEqual(rendered[self.user1.id], self.household1)
+        self.assertEqual(rendered[self.user2.id], self.household2)
+
+    def test_switching_to_second_identity_changes_active_household(self):
+        response = self.client.post("/switch/", {"user_id": self.user2.id})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.session["user_id"], self.user2.id)
+        membership = HouseholdMember.objects.get(user_id=self.client.session["user_id"])
+        self.assertEqual(membership.household, self.household2)
+
+    def test_switching_back_to_first_identity_restores_it(self):
+        self.client.post("/switch/", {"user_id": self.user2.id})
+        response = self.client.post("/switch/", {"user_id": self.user1.id})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.session["user_id"], self.user1.id)
+        membership = HouseholdMember.objects.get(user_id=self.client.session["user_id"])
+        self.assertEqual(membership.household, self.household1)
+
+    def test_switching_to_already_known_identity_does_not_duplicate(self):
+        self.client.post("/switch/", {"user_id": self.user2.id})
+        before = sorted(self.client.session["known_user_ids"])
+
+        self.client.post("/switch/", {"user_id": self.user2.id})
+        after = sorted(self.client.session["known_user_ids"])
+
+        self.assertEqual(before, after)
+        self.assertEqual(len(after), 2)
+
+    def test_switching_to_user_from_separate_session_is_rejected(self):
+        other_client = Client()
+        other_client.post(
+            "/identity/",
+            {"household_name": "Other House", "display_name": "Riley"},
+        )
+        other_user = User.objects.get(name="Riley")
+
+        current_user_id_before = self.client.session["user_id"]
+        response = self.client.post("/switch/", {"user_id": other_user.id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.session["user_id"], current_user_id_before)
+
+    def test_switching_with_non_numeric_user_id_is_rejected(self):
+        current_user_id_before = self.client.session["user_id"]
+        response = self.client.post("/switch/", {"user_id": "not-a-number"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.session["user_id"], current_user_id_before)
+
+    def test_get_switch_with_single_known_identity_returns_200(self):
+        solo_client = Client()
+        solo_client.post(
+            "/identity/",
+            {"household_name": "Lone House", "display_name": "Sam"},
+        )
+
+        response = solo_client.get("/switch/")
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_deleted_known_user_omitted_from_rendered_list(self):
+        # Switch back to user1 so the deleted user (user2) isn't the
+        # currently active identity itself.
+        self.client.post("/switch/", {"user_id": self.user1.id})
+        self.user2.delete()
+
+        response = self.client.get("/switch/")
+
+        self.assertEqual(response.status_code, 200)
+        identities = response.context["identities"]
+        rendered_ids = [entry["user"].id for entry in identities]
+        self.assertEqual(rendered_ids, [self.user1.id])
+
+    def test_guard_redirects_when_no_identity_set(self):
+        fresh_client = Client()
+        response = fresh_client.get("/switch/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")

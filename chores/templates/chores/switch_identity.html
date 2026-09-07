@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Switch identity</title>
+</head>
+<body>
+    <h1>Switch identity</h1>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <ul>
+        {% for identity in identities %}
+            <li>
+                {{ identity.user.name }}
+                -
+                {% if identity.household %}
+                    {{ identity.household.name }}
+                {% else %}
+                    (no household)
+                {% endif %}
+                {% if identity.is_current %}
+                    <strong>(active)</strong>
+                {% else %}
+                    <form method="post" action="{% url 'switch_identity' %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="user_id" value="{{ identity.user.id }}">
+                        <button type="submit">Switch</button>
+                    </form>
+                {% endif %}
+            </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>

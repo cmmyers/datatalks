@@ -23,8 +23,18 @@ def get_current_user(request):
 
 
 def set_current_user(request, user):
-    """Store the given User as this session's active identity."""
+    """Store the given User as this session's active identity.
+
+    Also records user.id in request.session["known_user_ids"] (creating the
+    list if absent, never adding a duplicate) so a session can later switch
+    back to any identity it has ever created/joined/switched to (task 7).
+    """
     request.session["user_id"] = user.id
+
+    known_user_ids = request.session.get("known_user_ids", [])
+    if user.id not in known_user_ids:
+        known_user_ids.append(user.id)
+    request.session["known_user_ids"] = known_user_ids
 
 
 def require_identity(view_func):

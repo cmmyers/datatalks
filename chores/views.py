@@ -2,7 +2,7 @@ from django.db import IntegrityError, transaction
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
 
-from .identity import set_current_user
+from .identity import get_current_user, require_identity, set_current_user
 from .models import Household, HouseholdMember, User, generate_join_code
 
 
@@ -79,6 +79,58 @@ def _handle_join(request):
 
     set_current_user(request, user)
     return None
+
+
+@require_identity
+def switch_identity(request):
+    # Lets a session switch among only the identities it has itself
+    # created/joined/switched to (request.session["known_user_ids"], set
+    # by set_current_user). Wrapped in the task 4 identity guard, so a
+    # session with no active identity redirects to /identity/ instead of
+    # rendering here.
+    error = None
+
+    if request.method == "POST":
+        raw_user_id = request.POST.get("user_id", "")
+        try:
+            submitted_user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            submitted_user_id = None
+
+        known_user_ids = request.session.get("known_user_ids", [])
+
+        if submitted_user_id is None or submitted_user_id not in known_user_ids:
+            error = "That identity is not available in this session."
+        else:
+            user = User.objects.filter(pk=submitted_user_id).first()
+            if user is None:
+                error = "That identity is not available in this session."
+            else:
+                set_current_user(request, user)
+                return redirect("health")
+
+    current_user = get_current_user(request)
+    known_user_ids = request.session.get("known_user_ids", [])
+
+    identities = []
+    for user_id in known_user_ids:
+        user = User.objects.filter(pk=user_id).first()
+        if user is None:
+            continue
+        membership = HouseholdMember.objects.filter(user=user).first()
+        identities.append(
+            {
+                "user": user,
+                "household": membership.household if membership else None,
+                "is_current": current_user is not None and user.id == current_user.id,
+            }
+        )
+
+    return render(
+        request,
+        "chores/switch_identity.html",
+        {"identities": identities, "error": error},
+    )
 
 
 def _create_household_with_retry(name):
