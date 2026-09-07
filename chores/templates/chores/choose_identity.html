@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Choose or create a household</title>
+</head>
+<body>
+    <h1>Create a household</h1>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form method="post" action="{% url 'choose_identity' %}">
+        {% csrf_token %}
+        <label>
+            Household name
+            <input type="text" name="household_name">
+        </label>
+        <label>
+            Your name
+            <input type="text" name="display_name">
+        </label>
+        <button type="submit">Create household</button>
+    </form>
+</body>
+</html>

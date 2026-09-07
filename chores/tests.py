@@ -1,4 +1,5 @@
 import datetime
+from unittest.mock import patch
 
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.exceptions import ValidationError
@@ -313,3 +314,112 @@ class ChooseIdentityViewTests(TestCase):
 
         response = self.client.get("/identity/")
         self.assertEqual(response.status_code, 200)
+
+
+class CreateHouseholdViewTests(TestCase):
+    def test_valid_submission_creates_household_user_and_membership(self):
+        response = self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+
+        self.assertEqual(Household.objects.count(), 1)
+        self.assertEqual(User.objects.count(), 1)
+        self.assertEqual(HouseholdMember.objects.count(), 1)
+
+        household = Household.objects.get()
+        user = User.objects.get()
+        membership = HouseholdMember.objects.get()
+        self.assertEqual(membership.household, household)
+        self.assertEqual(membership.user, user)
+        self.assertEqual(response.status_code, 302)
+
+    def test_join_code_is_non_empty_and_matches_expected_format(self):
+        self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+
+        household = Household.objects.get()
+        self.assertTrue(household.join_code)
+        self.assertRegex(household.join_code, r"^[A-Z0-9]{8}$")
+
+    def test_many_households_never_produce_duplicate_join_codes(self):
+        for i in range(20):
+            self.client.post(
+                "/identity/",
+                {"household_name": f"House {i}", "display_name": f"User {i}"},
+            )
+
+        join_codes = list(Household.objects.values_list("join_code", flat=True))
+        self.assertEqual(len(join_codes), 20)
+        self.assertEqual(len(set(join_codes)), 20)
+
+    def test_join_code_collision_is_retried(self):
+        existing = Household.objects.create(name="Existing House", join_code="DUPCODE1")
+
+        with patch(
+            "chores.views.generate_join_code",
+            side_effect=["DUPCODE1", "FRESHCOD"],
+        ):
+            response = self.client.post(
+                "/identity/",
+                {"household_name": "Smith House", "display_name": "Alex"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Household.objects.count(), 2)
+        new_household = Household.objects.exclude(pk=existing.pk).get()
+        self.assertEqual(new_household.join_code, "FRESHCOD")
+        self.assertNotEqual(new_household.join_code, existing.join_code)
+
+    def test_get_current_user_returns_new_user_after_creation(self):
+        self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+
+        user = User.objects.get()
+        self.assertEqual(self.client.session["user_id"], user.id)
+
+    def test_successful_submission_redirects_to_health(self):
+        response = self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/")
+
+    def test_blank_household_name_rerenders_with_error_and_creates_no_rows(self):
+        response = self.client.post(
+            "/identity/",
+            {"household_name": "   ", "display_name": "Alex"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Household.objects.count(), 0)
+        self.assertEqual(User.objects.count(), 0)
+        self.assertEqual(HouseholdMember.objects.count(), 0)
+
+    def test_blank_display_name_rerenders_with_error_and_creates_no_rows(self):
+        response = self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Household.objects.count(), 0)
+        self.assertEqual(User.objects.count(), 0)
+        self.assertEqual(HouseholdMember.objects.count(), 0)
+
+    def test_whitespace_padded_names_are_stripped_before_storing(self):
+        self.client.post(
+            "/identity/",
+            {"household_name": "  My House  ", "display_name": "  Alex  "},
+        )
+
+        household = Household.objects.get()
+        user = User.objects.get()
+        self.assertEqual(household.name, "My House")
+        self.assertEqual(user.name, "Alex")
