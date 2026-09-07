@@ -38,7 +38,7 @@ would still permit `0` — `status` restricted to `open`/`claimed` via model
 `status` only ever tracks open/claimed at the model level — "completed" is
 not a stored status; completing a chore is represented by writing a
 `WeeklyCompletion` row and resetting the chore back to `open` (that reset
-behavior is built in task 11, not here).
+behavior is built in task 12, not here).
 
 Set explicit `on_delete` behavior rather than leaving it to accident:
 `WeeklyCompletion.chore`, `.household`, and `.user` should use
@@ -55,7 +55,7 @@ household — enforce this with model-level validation (e.g. a `clean()`
 override raising `ValidationError` on mismatch), not just as a convention
 that happens to hold when application code behaves. `points_awarded` is its
 own stored value, independent of `Chore.points`, so that editing a chore's
-point value later (task 15) never rewrites already-recorded history.
+point value later (task 16) never rewrites already-recorded history.
 
 Include migrations and tests asserting: a newly created `Chore` defaults to
 `status="open"` with no `claimed_by`; creating a `Chore` with `points=0` (or
@@ -143,7 +143,7 @@ exists today — since the chore pool (task 8) hasn't been built yet, redirect
 to the existing health-check URL (name `"health"`, from task 1) as an
 interim stand-in rather than reversing a not-yet-existent `chore_pool` URL
 name, which would raise `NoReverseMatch`; task 8 should update this redirect
-(and tasks 6/7/12's equivalent placeholder redirects) to point at the real
+(and tasks 6/7/13's equivalent placeholder redirects) to point at the real
 chore pool once it exists — rather than re-rendering the form. Because this
 always creates a brand-new household, there is no existing member to
 collide names with — the case-insensitive within-household name uniqueness
@@ -333,7 +333,49 @@ repeated requests; and, updated in this task, that creating a household
 (task 5), joining a household (task 6), and switching identity (task 7)
 each redirect to `chore_pool` rather than `health` on success.
 
-## 9. Claim a chore
+## 9. Home page with navigation at "/"
+Goal: Give the app a real landing page at the root URL with links to what's
+built so far, instead of the root just being the task 1 health-check stub.
+Description: Move the task 1 health-check view off the root path — keep it
+reachable at `/health/` under the same URL name `"health"` (so anything
+holding a reference to `reverse("health")` keeps working; only the *path*
+changes, not the name) — and add a new view at the root path (`""`), named
+`index`, wrapped in the task 4 `require_identity` guard, so a session with no
+active identity is redirected to `/identity/` instead of seeing a nav page
+full of links to views it can't use yet, consistent with every other guarded
+view (tasks 7, 8). For a signed-in session, `index` renders a minimal page
+linking to the chore pool (`/chores/`, task 8) and the household switcher
+(`/switch/`, task 7) — the only two guarded, navigable views that exist as of
+this task.
+
+This is intentionally minimal, not the app's final navigation: task 18
+(formerly task 17, before this task's insertion) later builds a full base
+template with shared nav across every view — including points board,
+history, and settings, once those exist — plus real shared CSS. This task
+exists so there's something clickable to land on today rather than waiting
+for task 18's full treatment; task 18 should extend/restyle this same
+`index`/root page as part of wiring the shared base template, rather than
+introduce a competing landing page.
+
+Because the root path's behavior changes (it's no longer an unguarded 200
+"OK" for every request), update task 1's existing health-check test to hit
+`/health/` instead of `""`. Do not change any existing redirect target
+elsewhere in the app — the create-household, join-household, and
+switch-identity flows still redirect to `chore_pool` on success, per task 8;
+`index` is a separate, additional entry point for visiting `/` directly, not
+a new landing target those flows need to point at instead.
+
+Include tests asserting: GET `/health/` still returns 200 (the relocated
+health check); GET `""` (root) with no active session identity redirects
+(302) to `/identity/`, mirroring every other guarded view; GET `""` with an
+active session identity returns 200 and the rendered page contains links to
+`/chores/` and `/switch/` (assert on those URLs appearing in the response
+content, not just a bare 200 status); and visiting `""` does not itself
+mutate session state (e.g. does not add to `known_user_ids` or change the
+active identity) — it's read-only navigation, not an identity-changing
+action.
+
+## 10. Claim a chore
 Goal: Let the acting user claim an open chore.
 Description: Build an action endpoint (e.g. POST `/chores/<id>/claim/`,
 named `claim_chore`) wrapped in the task 4 identity guard, so a request with
@@ -366,13 +408,13 @@ change the chore's `status` and returns a non-2xx response; and a request
 with no active session identity redirects to `/identity/` rather than
 performing the claim.
 
-## 10. Release a claimed chore
+## 11. Release a claimed chore
 Goal: Let the claiming user put a chore back into the open pool.
 Description: Build an action endpoint (e.g. POST `/chores/<id>/release/`,
 named `release_chore`) wrapped in the task 4 identity guard, so a request
 with no active session identity redirects (302) to `/identity/` rather than
 running. Resolve the active household via the current user's
-`HouseholdMember` row (same lookup as tasks 8 and 9). Look up the target
+`HouseholdMember` row (same lookup as tasks 8 and 10). Look up the target
 `Chore` scoped to that household — a chore id belonging to a different
 household must be treated as not found (404), not released, even if it is
 `claimed`, so household isolation holds against a guessed/crafted id; a
@@ -386,7 +428,7 @@ user, reject the release — leave the chore unchanged and return a JSON error
 response with 403 (the requester doesn't hold this claim). If the chore is
 already `open` (not claimed by anyone), reject the release too — leave it
 unchanged and return a JSON error response with 409 (nothing to release),
-matching task 9's use of 409 for "not in the expected state" rather than
+matching task 10's use of 409 for "not in the expected state" rather than
 treating it as a permissions problem. Only accept POST (or another mutating
 method) — a GET must not perform the release, per the spec's `fetch`-backed
 JSON convention for dynamic interactions; reject non-POST requests with 405
@@ -405,14 +447,14 @@ does not change the chore's `status` and returns a non-2xx (405) response;
 and a request with no active session identity redirects to `/identity/`
 rather than performing the release.
 
-## 11. Complete a chore and award points
+## 12. Complete a chore and award points
 Goal: Let the claiming user mark a chore done and award its points for the
 current week.
 Description: Build an action endpoint (e.g. POST `/chores/<id>/complete/`,
 named `complete_chore`) wrapped in the task 4 identity guard, so a request
 with no active session identity redirects (302) to `/identity/` rather than
 running. Resolve the active household via the current user's
-`HouseholdMember` row (same lookup as tasks 8-10). Look up the target `Chore`
+`HouseholdMember` row (same lookup as tasks 8, 10, and 11). Look up the target `Chore`
 scoped to that household — a chore id belonging to a different household
 must be treated as not found (404), not completed, even if it is `claimed`,
 so household isolation holds against a guessed/crafted id; a nonexistent
@@ -423,7 +465,7 @@ task 13 formally builds one, since a `WeeklyCompletion` row can't be written
 without a `week_start_date`. Add a small helper now (e.g. a
 `current_week_start()` function in a new `chores/weeks.py`, using
 `django.utils.timezone.localdate()` per the spec's "server local time" rule)
-that returns the date of the Monday on or before today. Task 13 should reuse
+that returns the date of the Monday on or before today. Task 14 should reuse
 this helper (and extend its tests across the Sunday-to-Monday boundary)
 rather than introduce a competing one.
 
@@ -444,7 +486,7 @@ create no `WeeklyCompletion` row, leave the chore unchanged, and return a
 JSON error response with 403 (the requester doesn't hold this claim). If the
 chore is already `open` (not claimed by anyone), reject the completion too —
 create no `WeeklyCompletion` row, leave the chore unchanged, and return a
-JSON error response with 409 (nothing to complete), matching tasks 9/10's use
+JSON error response with 409 (nothing to complete), matching tasks 10/11's use
 of 409 for "not in the expected state" rather than treating it as a
 permissions problem. Only accept POST (or another mutating method) — a GET
 must not perform the completion, per the spec's `fetch`-backed JSON
@@ -466,7 +508,7 @@ creates no `WeeklyCompletion` row, and leaves the chore unchanged; completing
 a chore id that belongs to a different household returns 404, creates no
 `WeeklyCompletion` row, and leaves that chore unchanged, even if it is
 `claimed`; completing a nonexistent chore id returns 404; changing a chore's
-`points` after completing it once (task 15 territory, but exercisable now
+`points` after completing it once (task 16 territory, but exercisable now
 via direct model edit in the test) does not change the already-recorded
 `WeeklyCompletion.points_awarded`; `current_week_start()` returns the same
 Monday date for every day Monday through Sunday of a given week and a date
@@ -476,17 +518,17 @@ not change the chore's `status`, creates no `WeeklyCompletion` row, and
 returns a non-2xx (405) response; and a request with no active session
 identity redirects to `/identity/` rather than performing the completion.
 
-## 12. Points board view
+## 13. Points board view
 Goal: Show each household member's point total for the current week.
 Description: Build a read-only view (e.g. URL `/points/` named
 `points_board`) wrapped in the task 4 identity guard, so a request with no
 active session identity redirects (302) to `/identity/` instead of rendering
 the board. Assume the `WeeklyCompletion` model (task 3), the session
 identity helpers/guard (task 4), and the `current_week_start()` helper
-(`chores/weeks.py`, task 11) already exist — task 13 will formally own
+(`chores/weeks.py`, task 12) already exist — task 14 will formally own
 week-boundary logic, but this task can rely on `current_week_start()` as it
 stands now. Resolve the active household via the current user's
-`HouseholdMember` row (same lookup as tasks 8-11), then, for every `User`
+`HouseholdMember` row (same lookup as tasks 8, 10, 11, and 12), then, for every `User`
 who is a member of that household (via `HouseholdMember`), sum
 `WeeklyCompletion.points_awarded` where `household` matches the active
 household and `week_start_date` equals `current_week_start()`, grouped by
@@ -520,13 +562,13 @@ should count; and a request with no active session identity redirects to
 
 ---
 
-**Tasks 13 and below have not been groomed yet** — they still reflect the
+**Tasks 14 and below have not been groomed yet** — they still reflect the
 original backlog language and will be reviewed for checkable acceptance
 criteria and edge cases when their turn comes up.
 
 ---
 
-## 13. Weekly rollover
+## 14. Weekly rollover
 Goal: Reset point totals for a new week without losing history or chores.
 Description: Add a way to determine the current week's start date
 consistently (Monday, server local time) so that once a new week begins, the
@@ -536,28 +578,28 @@ or claimed-but-incomplete chores simply stay as-is in the pool (no deletion
 or "missed" marking). Test the week-boundary calculation across a
 Sunday-to-Monday transition.
 
-## 14. History view
+## 15. History view
 Goal: Show past weeks' totals and/or a log of completed chores.
 Description: Build a read-only view listing prior weeks'
 `WeeklyCompletion` records for the household, grouped by `week_start_date`,
 showing who completed what and how many points it earned. Test that it
 excludes other households' data and correctly groups multiple weeks.
 
-## 15. Household settings — manage chores
+## 16. Household settings — manage chores
 Goal: Let members add and edit chores in the pool.
 Description: Build views/forms to create a new chore (name, room, points) and
 edit an existing one, scoped to the active household. Test that chores
 created here appear in the chore pool view and that editing updates the
 right record.
 
-## 16. Household settings — join code and member list
+## 17. Household settings — join code and member list
 Goal: Let members view/copy the household's join code and see who's in it.
 Description: Build a read-only settings section showing the household's
 `join_code` (with a copy-to-clipboard affordance) and a list of current
 members. Test that the join code displayed matches the household's stored
 code and the member list matches `HouseholdMember` rows.
 
-## 17. Base layout and navigation
+## 18. Base layout and navigation
 Goal: Give the app a consistent shell so all the views feel like one product.
 Description: Build a base Django template (nav linking to chore pool, points
 board, history, settings, household switcher) that other view templates
@@ -565,17 +607,17 @@ extend, plus minimal shared CSS. No new backend logic — this is purely
 wiring existing views into a coherent layout. Manually click through each
 linked page to confirm navigation works.
 
-## 18. Show join code immediately after creating a household
+## 19. Show join code immediately after creating a household
 Goal: Let a household's creator see and copy the join code right away,
 without having to first navigate to settings.
 Description: After a household is created (task 5) and the session redirects
 to the chore pool, surface the new `join_code` somewhere immediately visible
 to the creator — e.g. a one-time confirmation banner or interstitial page
 shown right after creation — distinct from the permanent join-code display
-built in household settings (task 16). Test that the code shown immediately
+built in household settings (task 17). Test that the code shown immediately
 after creation matches the household's stored `join_code`.
 
-## 19. Link from the household switcher to create/join another household
+## 20. Link from the household switcher to create/join another household
 Goal: Let someone already viewing the switcher (task 7) add a new household
 or identity to the current browser session without navigating there by hand.
 Description: Add a link/button on the `switch_identity` view (task 7) to the
@@ -591,11 +633,11 @@ the link from the switcher, then creating (or joining) a household, results
 in `known_user_ids` containing the original identity plus the newly created
 one, and that the switcher now lists both.
 
-## 20. My claimed chores view
+## 21. My claimed chores view
 Goal: Let a member see the chores they've personally claimed but not yet
 completed.
 Description: `_docs/plan.md` lists "My claimed chores" as one of the
-minimum views, but no existing task builds it — tasks 9-11 only cover the
+minimum views, but no existing task builds it — tasks 10-12 only cover the
 claim/release/complete *actions*, not a page listing a member's own claims.
 Build a read-only view (e.g. URL `/chores/mine/` named `my_claimed_chores`)
 wrapped in the task 4 identity guard, so a request with no active session
