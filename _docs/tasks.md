@@ -5,7 +5,7 @@ Tasks for building the Household Chore Tracker described in
 handed off without needing to read the others — background/spec references
 are repeated where useful rather than assumed.
 
-## 1. Project setup with an empty passing test — Completed 2026-09-07
+## 1. Project setup with an empty passing test — Completed 2026-09-07 13:00 PDT
 Goal: Get a runnable Django project skeleton with one green test.
 Description: Confirm/initialize the Django project (`choretracker`) and a
 `chores` app, wire the app into `INSTALLED_APPS`, and add a placeholder URL
@@ -15,7 +15,7 @@ single test that uses the Django test client to hit that URL and asserts a
 yet — this task just proves the project boots, routes a request, and the
 test runner works.
 
-## 2. `User`, `Household`, and `HouseholdMember` models
+## 2. `User`, `Household`, and `HouseholdMember` models — Completed 2026-09-07 13:08 PDT
 Goal: Model people, households, and membership between them.
 Description: Add a `User` model (just a `name` field — no password/email,
 per spec), a `Household` model (`name`, unique `join_code`), and a
