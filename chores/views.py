@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
@@ -11,31 +12,72 @@ def health(request):
 
 
 def choose_identity(request):
-    # Redirect target for the task 4 identity guard. Extended here with the
-    # "create a household" form (task 5); task 6 will add a "join an
-    # existing household" form to this same view. This view must never be
-    # wrapped in the identity guard itself, since it is the guard's own
-    # redirect target — wrapping it would create a redirect loop.
+    # Redirect target for the task 4 identity guard. Extended in task 5 with
+    # a "create a household" form and in task 6 with a "join an existing
+    # household" form, both posted to this same view/URL. A hidden `action`
+    # field on each form ("create" or "join") tells POST which handler to
+    # run; missing/unrecognized action defaults to "create" so older
+    # submissions of the create form (no action field) keep working. This
+    # view must never be wrapped in the identity guard itself, since it is
+    # the guard's own redirect target — wrapping it would create a redirect
+    # loop.
     error = None
 
     if request.method == "POST":
-        household_name = request.POST.get("household_name", "").strip()
-        display_name = request.POST.get("display_name", "").strip()
+        action = request.POST.get("action", "create")
 
-        if not household_name or not display_name:
-            error = "Household name and display name are both required."
+        if action == "join":
+            error = _handle_join(request)
+            if error is None:
+                return redirect("health")
         else:
-            household = _create_household_with_retry(household_name)
-            user = User.objects.create(name=display_name)
-            HouseholdMember.objects.create(user=user, household=household)
-            set_current_user(request, user)
-            # Interim landing target: the chore pool (task 8) doesn't exist
-            # yet, so redirect to the health-check URL as a stand-in. Task 8
-            # should update this (and tasks 6/7/12's equivalent redirects) to
-            # point at the real chore pool once it exists.
-            return redirect("health")
+            error = _handle_create(request)
+            if error is None:
+                return redirect("health")
 
     return render(request, "chores/choose_identity.html", {"error": error})
+
+
+def _handle_create(request):
+    """Process the create-household form. Returns an error string, or None on success."""
+    household_name = request.POST.get("household_name", "").strip()
+    display_name = request.POST.get("display_name", "").strip()
+
+    if not household_name or not display_name:
+        return "Household name and display name are both required."
+
+    household = _create_household_with_retry(household_name)
+    user = User.objects.create(name=display_name)
+    HouseholdMember.objects.create(user=user, household=household)
+    set_current_user(request, user)
+    # Interim landing target: the chore pool (task 8) doesn't exist
+    # yet, so redirect to the health-check URL as a stand-in. Task 8
+    # should update this (and tasks 6/7/12's equivalent redirects) to
+    # point at the real chore pool once it exists.
+    return None
+
+
+def _handle_join(request):
+    """Process the join-household form. Returns an error string, or None on success."""
+    join_code = request.POST.get("join_code", "").strip()
+    display_name = request.POST.get("display_name", "").strip()
+
+    if not join_code or not display_name:
+        return "Join code and display name are both required."
+
+    household = Household.objects.filter(join_code=join_code).first()
+    if household is None:
+        return "No household found for that join code."
+
+    user = User.objects.create(name=display_name)
+    try:
+        HouseholdMember.objects.create(user=user, household=household)
+    except ValidationError:
+        user.delete()
+        return f"A member named '{display_name}' already exists in that household."
+
+    set_current_user(request, user)
+    return None
 
 
 def _create_household_with_retry(name):

@@ -13,6 +13,7 @@
 
     <form method="post" action="{% url 'choose_identity' %}">
         {% csrf_token %}
+        <input type="hidden" name="action" value="create">
         <label>
             Household name
             <input type="text" name="household_name">
@@ -22,6 +23,22 @@
             <input type="text" name="display_name">
         </label>
         <button type="submit">Create household</button>
+    </form>
+
+    <h1>Join a household</h1>
+
+    <form method="post" action="{% url 'choose_identity' %}">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="join">
+        <label>
+            Join code
+            <input type="text" name="join_code">
+        </label>
+        <label>
+            Your name
+            <input type="text" name="display_name">
+        </label>
+        <button type="submit">Join household</button>
     </form>
 </body>
 </html>

@@ -423,3 +423,112 @@ class CreateHouseholdViewTests(TestCase):
         user = User.objects.get()
         self.assertEqual(household.name, "My House")
         self.assertEqual(user.name, "Alex")
+
+
+class JoinHouseholdViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House", join_code="JOINME1")
+        self.existing_user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.existing_user, household=self.household)
+
+    def test_valid_join_creates_user_and_membership_no_new_household(self):
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOINME1", "display_name": "Jamie"},
+        )
+
+        self.assertEqual(Household.objects.count(), 1)
+        self.assertEqual(User.objects.count(), 2)
+        self.assertEqual(HouseholdMember.objects.count(), 2)
+
+        new_user = User.objects.get(name="Jamie")
+        membership = HouseholdMember.objects.get(user=new_user)
+        self.assertEqual(membership.household, self.household)
+        self.assertEqual(response.status_code, 302)
+
+    def test_get_current_user_returns_new_user_after_joining(self):
+        self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOINME1", "display_name": "Jamie"},
+        )
+
+        new_user = User.objects.get(name="Jamie")
+        self.assertEqual(self.client.session["user_id"], new_user.id)
+
+    def test_successful_join_redirects_to_health(self):
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOINME1", "display_name": "Jamie"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/")
+
+    def test_join_code_matching_no_household_rerenders_with_error(self):
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "NOPE0000", "display_name": "Jamie"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(User.objects.count(), 1)
+        self.assertEqual(HouseholdMember.objects.count(), 1)
+
+    def test_blank_join_code_rerenders_with_error_and_creates_no_rows(self):
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "   ", "display_name": "Jamie"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(User.objects.count(), 1)
+        self.assertEqual(HouseholdMember.objects.count(), 1)
+
+    def test_blank_display_name_rerenders_with_error_and_creates_no_rows(self):
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOINME1", "display_name": "   "},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(User.objects.count(), 1)
+        self.assertEqual(HouseholdMember.objects.count(), 1)
+
+    def test_duplicate_display_name_in_target_household_rejected_case_insensitive(self):
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOINME1", "display_name": "aLEX"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(User.objects.count(), 1)
+        self.assertEqual(HouseholdMember.objects.count(), 1)
+
+    def test_same_display_name_in_different_household_succeeds(self):
+        other_household = Household.objects.create(name="Jones House", join_code="OTHER123")
+        other_user = User.objects.create(name="Jamie")
+        HouseholdMember.objects.create(user=other_user, household=other_household)
+
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOINME1", "display_name": "Jamie"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(User.objects.count(), 3)
+        self.assertEqual(HouseholdMember.objects.count(), 3)
+
+        new_user = User.objects.exclude(pk__in=[self.existing_user.pk, other_user.pk]).get()
+        membership = HouseholdMember.objects.get(user=new_user)
+        self.assertEqual(membership.household, self.household)
+
+    def test_padded_join_code_and_display_name_are_stripped(self):
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "  JOINME1  ", "display_name": "  Jamie  "},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        new_user = User.objects.get(name="Jamie")
+        membership = HouseholdMember.objects.get(user=new_user)
+        self.assertEqual(membership.household, self.household)
