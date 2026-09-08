@@ -1789,6 +1789,89 @@ class HouseholdSettingsViewTests(TestCase):
         self.assertEqual(Chore.objects.count(), 0)
 
 
+class HouseholdSettingsJoinCodeAndMembersTests(TestCase):
+    # Task 17: read-only join-code and member-list sections on the same
+    # /settings/ page task 16 built.
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def test_join_code_appears_in_response(self):
+        response = self.client.get("/settings/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.household.join_code)
+
+    def test_every_member_name_appears_in_response(self):
+        other_user = User.objects.create(name="Jamie")
+        HouseholdMember.objects.create(user=other_user, household=self.household)
+
+        response = self.client.get("/settings/")
+
+        self.assertContains(response, "Alex")
+        self.assertContains(response, "Jamie")
+
+    def test_other_household_join_code_does_not_appear(self):
+        response = self.client.get("/settings/")
+
+        self.assertNotContains(response, self.other_household.join_code)
+
+    def test_other_household_member_name_does_not_appear(self):
+        outsider = User.objects.create(name="Taylor")
+        HouseholdMember.objects.create(user=outsider, household=self.other_household)
+
+        response = self.client.get("/settings/")
+
+        self.assertNotContains(response, "Taylor")
+
+    def test_member_list_ordered_case_insensitively_alphabetically(self):
+        # "bob" (lowercase) should still sort before "Alice" is wrong —
+        # case-insensitive alphabetical means Alice comes first regardless
+        # of case.
+        self.user.name = "bob"
+        self.user.save()
+        alice = User.objects.create(name="Alice")
+        HouseholdMember.objects.create(user=alice, household=self.household)
+
+        response = self.client.get("/settings/")
+
+        members = list(response.context["members"])
+        self.assertEqual([m.user.name for m in members], ["Alice", "bob"])
+
+    def test_add_chore_form_still_creates_chore(self):
+        # Not a new assertion beyond task 16's existing coverage — just
+        # confirming this task didn't regress the existing POST handling.
+        response = self.client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Chore.objects.count(), 1)
+
+    def test_existing_chore_list_still_renders(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.get("/settings/")
+
+        self.assertContains(response, chore.name)
+
+    def test_no_active_identity_redirects_to_identity(self):
+        fresh_client = Client()
+        response = fresh_client.get("/settings/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+
 class ChoreEditViewTests(TestCase):
     def setUp(self):
         self.household = Household.objects.create(name="Smith House")

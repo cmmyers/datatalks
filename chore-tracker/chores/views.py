@@ -2,6 +2,7 @@ import itertools
 
 from django.db import IntegrityError, transaction
 from django.db.models import Sum
+from django.db.models.functions import Lower
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
@@ -411,8 +412,21 @@ def household_settings(request):
     # task 8.
     chores = Chore.objects.filter(household=household).order_by("name", "id")
 
+    # Task 17: read-only join-code and member-list sections, scoped to the
+    # active household. Member order is deterministic — ascending
+    # alphabetical by name, case-insensitively — mirroring task 13's
+    # points-board ordering. User.name is already unique within a household
+    # case-insensitively (task 2), so no further tiebreaker is needed.
+    members = (
+        HouseholdMember.objects.filter(household=household)
+        .select_related("user")
+        .order_by(Lower("user__name"))
+    )
+
     return render(
-        request, "chores/household_settings.html", {"chores": chores, "error": error}
+        request,
+        "chores/household_settings.html",
+        {"chores": chores, "error": error, "household": household, "members": members},
     )
 
 

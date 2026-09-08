@@ -7,6 +7,27 @@
 <body>
     <h1>Household settings</h1>
 
+    <h2>Join code</h2>
+
+    <p>
+        <span id="join-code">{{ household.join_code }}</span>
+        <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('join-code').textContent)">
+            Copy
+        </button>
+    </p>
+
+    <h2>Members</h2>
+
+    {% if members %}
+        <ul>
+            {% for member in members %}
+                <li>{{ member.user.name }}</li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>No members yet.</p>
+    {% endif %}
+
     <h2>Chores</h2>
 
     {% if chores %}
