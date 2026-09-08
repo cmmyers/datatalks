@@ -549,7 +549,7 @@ not change the chore's `status`, creates no `WeeklyCompletion` row, and
 returns a non-2xx (405) response; and a request with no active session
 identity redirects to `/identity/` rather than performing the completion.
 
-## 13. Points board view
+## 13. Points board view — Completed 2026-09-07 17:35 PDT
 Goal: Show each household member's point total for the current week.
 Description: Build a read-only view (e.g. URL `/points/` named
 `points_board`) wrapped in the task 4 identity guard, so a request with no
@@ -568,9 +568,15 @@ household and `week_start_date` equals `current_week_start()`, grouped by
 A member of the active household with zero completions this week must still
 appear on the board with a total of `0`, not be omitted — the point of the
 board is to surface imbalance, including "did nothing this week." Order the
-results consistently (e.g. descending by total, ties broken alphabetically
-by name) so a test can assert on exact list contents and order rather than
-an unordered set. A household with no members other than the current user
+results consistently — descending by total, ties broken alphabetically by
+name **case-insensitively** (e.g. `order_by(Lower("user__name"))` or an
+equivalent case-insensitive key, not a naive `order_by("name")`, since
+SQLite's default `CharField` collation is case-sensitive and would sort
+uppercase names before lowercase ones — "Bob" before "adam" — rather than
+true alphabetical order; this mirrors the case-insensitive name handling
+already required elsewhere, e.g. task 2's membership uniqueness and task 6's
+join-name check) — so a test can assert on exact list contents and order
+rather than an unordered set. A household with no members other than the current user
 still renders 200 with that one member's total (`0` if they have no
 completions yet) rather than erroring.
 
@@ -588,8 +594,13 @@ in another household (task 7) — household isolation must hold; a
 "this week"'s sum); a `WeeklyCompletion` dated for a *future* week (an edge
 case beyond normal use — e.g. a test fixture simulating clock skew) is
 likewise excluded, since only `week_start_date == current_week_start()`
-should count; and a request with no active session identity redirects to
-`/identity/` rather than rendering the board.
+should count; two members of the active household tied at the same
+current-week point total appear in case-insensitive alphabetical order by
+name (e.g. a member named "bob" and a member named "Alice" tied at the same
+total must show "Alice" first — a naive case-sensitive sort would wrongly
+place lowercase "bob" before uppercase "Alice"); and a request with no
+active session identity redirects to `/identity/` rather than rendering the
+board.
 
 ---
 
