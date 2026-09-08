@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}{% endblock %}</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 2rem;
+            color: #222;
+        }
+        nav#site-nav ul {
+            list-style: none;
+            display: flex;
+            gap: 1rem;
+            padding: 0;
+            margin: 0 0 2rem 0;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 1rem;
+        }
+        nav#site-nav a {
+            text-decoration: none;
+            color: #1a5fb4;
+        }
+        nav#site-nav a:hover {
+            text-decoration: underline;
+        }
+        .error {
+            color: #b00020;
+        }
+    </style>
+</head>
+<body>
+    <nav id="site-nav">
+        <ul>
+            <li><a href="{% url 'chore_pool' %}">Chore pool</a></li>
+            <li><a href="{% url 'points_board' %}">Points board</a></li>
+            <li><a href="{% url 'history' %}">History</a></li>
+            <li><a href="{% url 'household_settings' %}">Settings</a></li>
+            <li><a href="{% url 'switch_identity' %}">Switch household / identity</a></li>
+        </ul>
+    </nav>
+
+    {% block content %}{% endblock %}
+</body>
+</html>

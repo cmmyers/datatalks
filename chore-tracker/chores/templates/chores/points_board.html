@@ -1,10 +1,8 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Points board</title>
-</head>
-<body>
+{% extends "chores/base.html" %}
+
+{% block title %}Points board{% endblock %}
+
+{% block content %}
     <h1>Points board</h1>
 
     {% if board %}
@@ -16,5 +14,4 @@
     {% else %}
         <p>No household members yet.</p>
     {% endif %}
-</body>
-</html>
+{% endblock %}

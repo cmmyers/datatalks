@@ -1,4 +1,5 @@
 import datetime
+import re
 from unittest.mock import patch
 
 from django.contrib.sessions.middleware import SessionMiddleware
@@ -2123,3 +2124,172 @@ class ChoreEditViewTests(TestCase):
         self.assertEqual(response.url, "/identity/")
         chore.refresh_from_db()
         self.assertEqual(chore.name, "Dishes")
+
+
+NAV_URLS = ["/chores/", "/points/", "/history/", "/settings/", "/switch/"]
+
+
+class BaseLayoutNavigationTests(TestCase):
+    # Task 18: base.html shell + shared nav wired into every guarded page.
+    # These tests cover wiring only — the shared CSS has no
+    # server-observable behavior a Django test client can assert on, so it's
+    # a manual/visual check (see task 18's own note), not covered here.
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        # switch_identity (task 7) renders only identities this session has
+        # itself created/joined/switched to, tracked separately from
+        # user_id — set it here too so /switch/ has a known identity to
+        # show its "existing content" (this session's own name).
+        session["known_user_ids"] = [self.user.id]
+        session.save()
+
+    def _assert_nav_urls_present(self, response):
+        content = response.content.decode()
+        for url in NAV_URLS:
+            self.assertIn(url, content)
+
+    def test_home_page_returns_200_with_nav_links(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_nav_urls_present(response)
+
+    def test_chore_pool_returns_200_with_nav_links_and_existing_content(self):
+        # Reuses task 8's own content assertion (an open chore's name
+        # appears) rather than re-deriving new coverage of the list itself.
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.get("/chores/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_nav_urls_present(response)
+        self.assertContains(response, chore.name)
+
+    def test_points_board_returns_200_with_nav_links_and_existing_content(self):
+        # Reuses task 13's own content assertion (a member's total appears).
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+        WeeklyCompletion.objects.create(
+            chore=chore,
+            household=self.household,
+            user=self.user,
+            points_awarded=5,
+            week_start_date=current_week_start(),
+        )
+
+        response = self.client.get("/points/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_nav_urls_present(response)
+        self.assertContains(response, self.user.name)
+        self.assertContains(response, "5 points")
+
+    def test_history_returns_200_with_nav_links_and_existing_content(self):
+        # Reuses task 15's own content assertion (a completion appears).
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+        WeeklyCompletion.objects.create(
+            chore=chore,
+            household=self.household,
+            user=self.user,
+            points_awarded=5,
+            week_start_date=current_week_start(),
+        )
+
+        response = self.client.get("/history/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_nav_urls_present(response)
+        self.assertContains(response, chore.name)
+        self.assertContains(response, self.user.name)
+        self.assertContains(response, "5 points")
+
+    def test_settings_returns_200_with_nav_links_and_existing_content(self):
+        # Reuses task 17's own content assertions (join code + member list).
+        response = self.client.get("/settings/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_nav_urls_present(response)
+        self.assertContains(response, self.household.join_code)
+        self.assertContains(response, self.user.name)
+
+    def test_switch_identity_returns_200_with_nav_links_and_existing_content(self):
+        # Reuses task 7's own content assertion (a known identity appears).
+        response = self.client.get("/switch/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_nav_urls_present(response)
+        self.assertContains(response, self.user.name)
+
+    def test_chore_edit_returns_200_with_nav_links(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.get(f"/chores/{chore.id}/edit/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_nav_urls_present(response)
+
+    def test_choose_identity_with_no_session_does_not_contain_nav_links(self):
+        # choose_identity.html is explicitly out of scope for task 18 — it
+        # stays a standalone page, so the shared nav (whose links all point
+        # at guarded pages) must not leak onto it.
+        fresh_client = Client()
+
+        response = fresh_client.get("/identity/")
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        for url in NAV_URLS:
+            self.assertNotIn(url, content)
+
+    def test_index_links_appear_within_shared_nav_not_a_standalone_list(self):
+        response = self.client.get("/")
+
+        content = response.content.decode()
+        nav_match = re.search(r'<nav id="site-nav">.*?</nav>', content, re.DOTALL)
+        self.assertIsNotNone(nav_match, "expected a <nav id=\"site-nav\"> element")
+        nav_html = nav_match.group(0)
+
+        # The nav itself must wrap the links...
+        self.assertIn("/chores/", nav_html)
+        self.assertIn("/switch/", nav_html)
+
+        # ...and the old standalone <ul> of exactly these two links (task 9)
+        # must be gone, not just duplicated outside the nav.
+        outside_nav = content.replace(nav_html, "")
+        self.assertNotIn("/chores/", outside_nav)
+        self.assertNotIn("/switch/", outside_nav)
+
+    def test_page_titles_reflect_each_specific_page(self):
+        cases = {
+            "/": "Home",
+            "/chores/": "Chore pool",
+            "/points/": "Points board",
+            "/history/": "History",
+            "/settings/": "Household settings",
+            "/switch/": "Switch identity",
+        }
+
+        for url, expected_title in cases.items():
+            response = self.client.get(url)
+            self.assertContains(response, f"<title>{expected_title}</title>")
+
+    def test_chore_edit_title_reflects_that_page(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.get(f"/chores/{chore.id}/edit/")
+
+        self.assertContains(response, "<title>Edit chore</title>")
