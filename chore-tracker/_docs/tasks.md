@@ -439,7 +439,7 @@ unchanged, even if it is `open`; claiming a nonexistent chore id returns
 returns a non-2xx (405) response; and a request with no active session
 identity redirects to `/identity/` rather than performing the claim.
 
-## 11. Release a claimed chore
+## 11. Release a claimed chore — Completed 2026-09-07
 Goal: Let the claiming user put a chore back into the open pool.
 Description: Build an action endpoint (e.g. POST `/chores/<id>/release/`,
 named `release_chore`) wrapped in the task 4 identity guard, so a request
