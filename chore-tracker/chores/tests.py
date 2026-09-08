@@ -2383,3 +2383,83 @@ class NewHouseholdBannerTests(TestCase):
         self.assertEqual(response.context["new_household_join_code"], second_household.join_code)
         self.assertContains(response, second_household.join_code)
         self.assertNotContains(response, first_household.join_code)
+
+
+class SwitcherAddHouseholdLinkTests(TestCase):
+    # Task 20: a link on the switcher (/switch/) to /identity/, so someone
+    # already there can create/join another household without navigating
+    # there by hand. Template-only change — these tests also close the gap
+    # (flagged by task 20's own description) that visiting /identity/ with
+    # an identity already active, and a subsequent create/join, never clears
+    # or replaces the existing identity/known_user_ids entry — behavior that
+    # already exists structurally (choose_identity's GET never touches the
+    # session, and set_current_user only ever appends), just not previously
+    # asserted directly.
+    def setUp(self):
+        self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+        self.household1 = Household.objects.get(name="Smith House")
+        self.user1 = User.objects.get(name="Alex")
+
+    def test_switch_page_contains_link_to_identity_page(self):
+        response = self.client.get("/switch/")
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        link_match = re.search(r'<a id="add-household-link"[^>]*>', content)
+        self.assertIsNotNone(link_match, 'expected an <a id="add-household-link"> element')
+        self.assertIn('href="/identity/"', link_match.group(0))
+
+    def test_visiting_identity_page_with_active_identity_leaves_session_unchanged(self):
+        user_id_before = self.client.session["user_id"]
+        known_user_ids_before = list(self.client.session["known_user_ids"])
+
+        response = self.client.get("/identity/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.session["user_id"], user_id_before)
+        self.assertEqual(list(self.client.session["known_user_ids"]), known_user_ids_before)
+
+    def test_creating_second_household_from_active_session_keeps_both_known_ids(self):
+        response = self.client.post(
+            "/identity/",
+            {"household_name": "Jones House", "display_name": "Jamie"},
+        )
+        second_user = User.objects.get(name="Jamie")
+
+        self.assertEqual(response.status_code, 302)
+        known_user_ids = self.client.session["known_user_ids"]
+        self.assertCountEqual(known_user_ids, [self.user1.id, second_user.id])
+
+        switch_response = self.client.get("/switch/")
+        identities = switch_response.context["identities"]
+        rendered = {entry["user"].id: entry["is_current"] for entry in identities}
+        self.assertEqual(rendered, {self.user1.id: False, second_user.id: True})
+
+    def test_joining_second_household_from_active_session_keeps_both_known_ids(self):
+        household2 = Household.objects.create(name="Jones House", join_code="JOIN2")
+
+        response = self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOIN2", "display_name": "Jamie"},
+        )
+        second_user = User.objects.get(name="Jamie")
+
+        self.assertEqual(response.status_code, 302)
+        known_user_ids = self.client.session["known_user_ids"]
+        self.assertCountEqual(known_user_ids, [self.user1.id, second_user.id])
+
+        switch_response = self.client.get("/switch/")
+        identities = switch_response.context["identities"]
+        rendered = {entry["user"].id: entry["household"] for entry in identities}
+        self.assertEqual(rendered[self.user1.id], self.household1)
+        self.assertEqual(rendered[second_user.id], household2)
+
+    def test_guard_redirects_before_reaching_switch_when_no_identity(self):
+        fresh_client = Client()
+        response = fresh_client.get("/switch/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
