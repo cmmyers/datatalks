@@ -1081,7 +1081,7 @@ reaching this new link (mirroring task 7's own
 reachable from a session that already has at least one identity to
 preserve.
 
-## 21. My claimed chores view
+## 21. My claimed chores view — Completed 2026-09-08 05:40 PDT
 Goal: Let a member see the chores they've personally claimed but not yet
 completed.
 Description: `_docs/plan.md` lists "My claimed chores" as one of the
@@ -1091,19 +1091,48 @@ Build a read-only view (e.g. URL `/chores/mine/` named `my_claimed_chores`)
 wrapped in the task 4 identity guard, so a request with no active session
 identity redirects (302) to `/identity/` instead of rendering the list.
 Resolve the active household via the current user's `HouseholdMember` row,
-same as task 8, then list `Chore` rows with `status="claimed"` and
-`claimed_by` equal to the current session user, scoped to that household,
-showing each chore's name, room, and point value. A chore claimed by a
-different member of the same household must not appear, even though it
+same as tasks 8, 10-13, 15-17, then list `Chore` rows with `status="claimed"`
+and `claimed_by` equal to the current session user, scoped to that
+household, showing each chore's name, room, and point value. A chore claimed
+by a different member of the same household must not appear, even though it
 shares the household — this view is scoped to "claimed by me," not "claimed
 by anyone." A user with no active claims still renders 200 with an empty
-list/message rather than erroring.
+list/message rather than erroring. Nothing stops a user from holding claims
+on more than one chore at once (claiming is per-chore, not limited to one
+active claim per user), so order the results the same deterministic way as
+task 8's chore pool (`order_by("name", "id")`) — `Chore.name` has no
+uniqueness constraint, so two of the current user's claimed chores can share
+a name; break ties by `id` so a test can assert on exact list contents and
+order rather than an unordered set.
+
+Its template (`chores/templates/chores/my_claimed_chores.html`) must extend
+`chores/base.html` and use `{% block title %}`/`{% block content %}`, like
+every other template converted or added since task 18 (`chore_pool.html`,
+`points_board.html`, `history.html`, `household_settings.html`,
+`chore_edit.html`, `switch_identity.html`, `index.html`) — this task does
+not itself ship a first-class template, it ships one that matches the
+established shell. Note explicitly what this task does *not* do: it does not
+add a sixth link to `base.html`'s shared `<nav>` — task 23, appended to this
+backlog when task 18 was groomed, already owns wiring `my_claimed_chores`
+into the nav once this view exists, and doing it here would duplicate that
+work. Because `base.html`'s nav is static markup rendered on every page that
+extends it regardless of which page is current (the same reason
+`chore_edit.html`, itself not one of the five linked pages, still shows the
+nav), `/chores/mine/` already renders the existing five nav links the moment
+its template extends `base.html`, even before task 23 adds the sixth link
+pointing back at itself.
 
 Include tests asserting: a chore claimed by the current user appears in the
 rendered list; a chore claimed by a different user in the same household is
 excluded; a chore claimed by the current session's *other* identity in a
 different household (per task 7's multi-household switching) is excluded;
-an open (unclaimed) chore in the active household is excluded; and a
+an open (unclaimed) chore in the active household is excluded; two chores
+claimed by the current user that share the same `name` still render in a
+deterministic order (e.g. ascending `id`) across repeated requests; GET
+`/chores/mine/` for a signed-in session returns 200 and the rendered
+response contains the existing five nav link URLs from task 18
+(`/chores/`, `/points/`, `/history/`, `/settings/`, `/switch/`), confirming
+the template extends `base.html` rather than rendering standalone; and a
 request with no active session identity redirects to `/identity/` rather
 than rendering the list.
 
