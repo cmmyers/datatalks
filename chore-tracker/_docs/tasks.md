@@ -1022,21 +1022,64 @@ specifically — not the first's — confirming the code always matches the
 currently active household rather than a stale one from an earlier creation
 in the same session.
 
-## 20. Link from the household switcher to create/join another household
+## 20. Link from the household switcher to create/join another household — Completed 2026-09-08 05:25 PDT
 Goal: Let someone already viewing the switcher (task 7) add a new household
-or identity to the current browser session without navigating there by hand.
-Description: Add a link/button on the `switch_identity` view (task 7) to the
-`/identity/` view (tasks 4–6's create/join forms), so a person who already
-holds one or more identities in this session can create a new household or
-join another one and have it added to their `known_user_ids` alongside their
-existing identities, rather than needing to know the `/identity/` URL
-directly. Since `/identity/` is the task 4 guard's redirect target and isn't
-itself guarded, visiting it with an existing active identity must not clear
-or replace that identity or its entry in `known_user_ids` — it should only
-add a new one on a successful create/join submission. Test that following
-the link from the switcher, then creating (or joining) a household, results
-in `known_user_ids` containing the original identity plus the newly created
-one, and that the switcher now lists both.
+or identity to the current browser session without navigating to
+`/identity/` by hand.
+Description: Add a link to `chores/templates/chores/switch_identity.html`
+(task 7's template, already extending `base.html` per task 18), inside
+`{% block content %}`, pointing at `{% url 'choose_identity' %}`
+(`/identity/`) — built with `{% url %}`, never a hardcoded path, mirroring
+task 18's nav links. Give it a stable marker (e.g.
+`id="add-household-link"`) so tests can assert on it precisely rather than
+scraping surrounding prose. This is a template-only change: `switch_identity`
+(`chores/views.py`, task 7) needs no code change to render this link, since
+it's static markup conditioned on nothing — the view doesn't gain a new
+context key.
+
+No changes are needed to `choose_identity`, `_handle_create`, or
+`_handle_join` (tasks 4-6) either — reading their current implementation
+confirms the "must not clear or replace an existing identity" requirement
+this task's Goal implies is already satisfied structurally, not something to
+newly build: GET `/identity/` never touches `request.session` at all
+(`choose_identity`'s GET path only renders the template), so simply
+following the new link and landing on the page leaves the current active
+identity and `known_user_ids` completely untouched regardless of whether one
+is already set. A subsequent successful POST (create or join) calls
+`set_current_user` (`chores/identity.py`, task 7), which always sets the
+*new* user as `request.session["user_id"]` (making it the newly active
+identity — the same behavior tasks 5/6 already rely on when reached from a
+fresh session) and *appends* the new user's id to `known_user_ids` without
+ever removing an id already present, so an existing identity's entry
+survives a subsequent create/join by that same session. This existing
+behavior is already exercised by task 19's
+`test_creating_two_households_back_to_back_shows_second_households_code`,
+but that test doesn't assert on `known_user_ids` directly; this task closes
+that gap with an explicit assertion, reached via the new link's path
+(switcher → identity page → create/join) rather than only via a bare POST to
+`/identity/`.
+
+Include tests asserting: GET `/switch/` for a session with at least one
+known identity contains a link to `/identity/` (assert on the marker, e.g.
+`id="add-household-link"`, and that its target resolves to `/identity/`);
+following that link — GET `/identity/` with an active identity already set —
+returns 200 and leaves both `request.session["user_id"]` and
+`request.session["known_user_ids"]` completely unchanged (confirmed by
+comparing session state before and after the GET); starting from a session
+with one identity already active, then submitting a valid create-household
+form on `/identity/`, results in `request.session["known_user_ids"]`
+containing both the original identity's id and the newly created one (not
+just the new one), and a subsequent GET `/switch/` lists both households,
+with the new one marked as currently active and the original one shown as
+switchable; the same holds for submitting a valid join-household form
+instead of create (starting from one active identity, joining a second
+household results in `known_user_ids` containing both ids, and `/switch/`
+lists both); and a session with no active identity at all is redirected away
+from `/switch/` to `/identity/` by the existing task 4 guard before ever
+reaching this new link (mirroring task 7's own
+`test_guard_redirects_when_no_identity_set`) — so the link is only ever
+reachable from a session that already has at least one identity to
+preserve.
 
 ## 21. My claimed chores view
 Goal: Let a member see the chores they've personally claimed but not yet
@@ -1102,3 +1145,28 @@ and the rendered response contains all six nav link URLs, including
 `/chores/mine/`, extending task 18's five-link assertion to six; and GET
 `/identity/` with no active session identity still does not contain any of
 the six nav link URLs, mirroring task 18's same scoping assertion.
+
+## 24. Add a way back to the switcher from `/identity/` when an identity is already active
+Goal: Let someone who followed task 20's new link from the switcher to
+`/identity/`, then changed their mind, get back to `/switch/` without
+relying on the browser's back button.
+Description: `choose_identity.html` (`/identity/`) is a standalone page with
+no shared nav — task 18 explicitly keeps it out of the `base.html` layout,
+since it's the task 4 guard's own redirect target and reachable with no
+active identity at all, when a nav full of guarded-page links would be dead
+weight for that visitor. Task 20 adds a legitimate path to this same page
+*from* a guarded page (the switcher) for a session that already has an
+active identity, so for that specific case add a link back to `/switch/` on
+`choose_identity.html`, conditioned on `get_current_user(request)` (task 4)
+returning a non-`None` user — shown only when there is an existing identity
+to switch back to; a session with no active identity at all (the normal,
+un-guarded arrival at this page) sees no such link, since there is nothing
+to go back to. This is a template change plus one new boolean/user context
+key passed by the `choose_identity` view (`chores/views.py`, tasks 4-6) on
+GET only — no change to `_handle_create`, `_handle_join`, or
+`switch_identity`, and no change to POST handling.
+Include tests asserting: GET `/identity/` with an active identity already
+set includes a link to `/switch/`; GET `/identity/` with no active identity
+set does not include a link to `/switch/`; and the existing create/join
+forms and their behavior (tasks 5/6, including their existing test
+coverage) are unchanged by this addition.
