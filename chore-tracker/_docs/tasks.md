@@ -1185,7 +1185,7 @@ present among a household's most recent `HISTORY_WEEKS_LIMIT` weeks, still
 appears in the rendered history alongside older weeks in the same grouped
 structure, per task 15.
 
-## 23. Add "My claimed chores" to the shared nav
+## 23. Add "My claimed chores" to the shared nav — Completed 2026-09-08 06:05 PDT
 Goal: Keep the shared nav (task 18) complete once task 21's "my claimed
 chores" view exists, since task 18 intentionally ships without a link to it
 because task 21 isn't built yet at that point in the backlog.
