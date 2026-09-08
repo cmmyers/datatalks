@@ -1136,25 +1136,54 @@ the template extends `base.html` rather than rendering standalone; and a
 request with no active session identity redirects to `/identity/` rather
 than rendering the list.
 
-## 22. Cap or paginate the history view
+## 22. Cap the history view to the most recent weeks — Completed 2026-09-08 05:55 PDT
 Goal: Keep the history view (task 15) from rendering an unbounded page as a
 household's `WeeklyCompletion` log grows over months of use.
 Description: Task 15's history view intentionally has no limit on how many
-week groups or completions it queries/renders — scoping that decision was
-out of scope for task 15 itself, since it's a growth concern rather than a
-correctness one, and flagging it as its own backlog item keeps task 15
-focused on grouping/ordering/isolation correctness. Add a bound to the
-history view: either cap it to the most recent N weeks (e.g. the last 12) or
-add pagination (e.g. a `?page=` query param, or a "load more" control),
-picking whichever fits the existing plain-template/no-JS-framework
-conventions (per `AGENTS.md`) most simply. Decide and document which
-approach was taken as part of implementing this task.
-Include tests asserting: a household with more than the chosen limit's worth
-of distinct `week_start_date`s only renders the most recent N (or the first
-page, if paginated) by default; the most-recent-first ordering established
-in task 15 is preserved under the new bound; and a household with fewer
-weeks of history than the limit is unaffected (renders exactly as task 15
-already specifies, with no missing or duplicated weeks).
+week groups it queries/renders — scoping that decision was out of scope for
+task 15 itself, since it's a growth concern rather than a correctness one,
+and flagging it as its own backlog item kept task 15 focused on
+grouping/ordering/isolation correctness. This is a local homework project
+(per `_docs/plan.md`, "no deployment/hosting required"), so a `?page=` query
+param or a "load more" control is more machinery than the problem needs —
+cap the view to a fixed number of most-recent weeks instead of building
+pagination. Add a module-level constant, e.g. `HISTORY_WEEKS_LIMIT = 12`, in
+`chores/views.py` (or `chores/weeks.py`, alongside `current_week_start()`),
+so the exact number is a single source of truth tests can import rather than
+a magic number re-typed in assertions.
+
+Determine the active household's `HISTORY_WEEKS_LIMIT` most recent distinct
+`week_start_date`s (e.g.
+`WeeklyCompletion.objects.filter(household=household).values_list("week_start_date", flat=True).distinct().order_by("-week_start_date")[:HISTORY_WEEKS_LIMIT]`)
+and filter the completions query to only those dates before grouping — this
+must be computed within the same household-scoped queryset task 15 already
+filters by `household`, so the number of weeks shown for one household is
+never inflated or reduced by another household's history (household
+isolation must hold under the cap the same way it already holds for task
+15's per-completion filtering). Everything task 15 already established about
+the resulting weeks stays true under the cap: most-recent-`week_start_date`-
+first ordering, the current week-in-progress included and counted as one of
+the `HISTORY_WEEKS_LIMIT` slots (not shown in addition to them), `completed_at`/
+`id`-descending order within each group, and each group's total computed
+from the same fetched rows (not a second query per group). A household with
+`HISTORY_WEEKS_LIMIT` or fewer distinct weeks of history renders every week
+it has, unaffected by the cap.
+
+Include tests asserting: a household with more than `HISTORY_WEEKS_LIMIT`
+distinct `week_start_date`s renders exactly `HISTORY_WEEKS_LIMIT` week
+groups by default, the `HISTORY_WEEKS_LIMIT` most recent ones, with the
+older week(s) beyond the cutoff excluded entirely; those rendered weeks
+still appear most-recent-first, per task 15; a household with exactly
+`HISTORY_WEEKS_LIMIT` distinct weeks renders all of them (boundary case,
+proving the cutoff isn't off-by-one in either direction); a household with
+fewer than `HISTORY_WEEKS_LIMIT` weeks renders exactly as task 15 already
+specifies, with no missing or duplicated weeks; a second household with more
+history than `HISTORY_WEEKS_LIMIT` does not affect how many weeks render for
+the active household (household isolation under the cap, mirroring task
+15's existing isolation tests); and the current week-in-progress, when
+present among a household's most recent `HISTORY_WEEKS_LIMIT` weeks, still
+appears in the rendered history alongside older weeks in the same grouped
+structure, per task 15.
 
 ## 23. Add "My claimed chores" to the shared nav
 Goal: Keep the shared nav (task 18) complete once task 21's "my claimed
