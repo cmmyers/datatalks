@@ -602,14 +602,6 @@ place lowercase "bob" before uppercase "Alice"); and a request with no
 active session identity redirects to `/identity/` rather than rendering the
 board.
 
----
-
-**Tasks 14 and below have not been groomed yet** — they still reflect the
-original backlog language and will be reviewed for checkable acceptance
-criteria and edge cases when their turn comes up.
-
----
-
 ## 14. Weekly rollover — Completed 2026-09-07 17:55 PDT
 Goal: Confirm the weekly reset is already fully correct and needs no new
 production code, and close the one remaining gap: proving that crossing a
@@ -663,12 +655,68 @@ present in the database (re-asserting
 paired with a DB check that the row survived unmodified, closing the gap
 that test alone doesn't check for).
 
-## 15. History view
-Goal: Show past weeks' totals and/or a log of completed chores.
-Description: Build a read-only view listing prior weeks'
-`WeeklyCompletion` records for the household, grouped by `week_start_date`,
-showing who completed what and how many points it earned. Test that it
-excludes other households' data and correctly groups multiple weeks.
+---
+
+**Tasks 15 and below have not been groomed yet** — they still reflect the
+original backlog language and will be reviewed for checkable acceptance
+criteria and edge cases when their turn comes up.
+
+---
+
+## 15. History view — Completed 2026-09-07 18:10 PDT
+Goal: Show a log of a household's completed chores, grouped by week, so
+members can see who did what and how many points it earned over time — not
+just the current week, which the points board (task 13) already covers.
+Description: Build a read-only view (e.g. URL `/history/` named `history`)
+wrapped in the task 4 `require_identity` guard, so a request with no active
+session identity redirects (302) to `/identity/` instead of rendering
+history. Resolve the active household via the current user's
+`HouseholdMember` row (same lookup as tasks 8, 10-13). Query
+`WeeklyCompletion` rows scoped to that household only (mirroring task 13's
+household-isolation filter — a completion belonging to a different household
+must never appear, even if it was awarded to a user with the same display
+name as a member of the active household), and group them by
+`week_start_date`.
+
+Every week that has at least one completion is shown, including the
+week-in-progress (`week_start_date == current_week_start()`, from
+`chores/weeks.py`, task 12) — nothing in the data model distinguishes a
+"past" week from the current one except how `current_week_start()` happens
+to evaluate at read time, so this view must not filter out the current week;
+a completion made earlier today should show up in history immediately, not
+only after the week rolls over. Order the week groups by `week_start_date`
+descending — most recent week first — so the most relevant history surfaces
+at the top of the page. Within each week group, list the individual
+completions (completing user's name, chore's name, `points_awarded`,
+`completed_at`) ordered by `completed_at` descending, with `id` descending as
+a tiebreaker for determinism (mirroring task 8's `id`-tiebreaker pattern,
+since two completions could in principle share a `completed_at` timestamp).
+Also show each week group's total points (the sum of `points_awarded` for
+that week's completions) computed from the same household-scoped rows
+already fetched, not a second query. A household with zero
+`WeeklyCompletion` rows at all (no history yet) still renders 200 with an
+empty list/message rather than erroring — mirroring the empty-state handling
+in tasks 8 and 13.
+
+Include tests asserting: a `WeeklyCompletion` belonging to the active
+household appears in the rendered history, showing the completing user's
+name, the chore's name, `points_awarded`, and `completed_at`; a
+`WeeklyCompletion` belonging to a different household is excluded from the
+history entirely, even if it was awarded to a user with the same display
+name as a member of the active household (household isolation, mirroring
+task 13); completions from two different `week_start_date`s render as two
+separate groups, each containing only that week's completions, and each
+group's displayed total equals the sum of that week's `points_awarded`
+values; the week groups appear ordered most-recent-`week_start_date`-first;
+multiple completions within the same week group render in a deterministic
+order (`completed_at` descending, `id` descending as tiebreaker) across
+repeated requests; a completion dated for the current week-in-progress
+(`week_start_date == current_week_start()`) appears in the history alongside
+older weeks in the same grouped structure, rather than being held back until
+the week rolls over; a household with zero `WeeklyCompletion` rows renders
+200 with an empty list/message rather than an error; and a request with no
+active session identity redirects to `/identity/` rather than rendering
+history.
 
 ## 16. Household settings — manage chores
 Goal: Let members add and edit chores in the pool.
@@ -743,3 +791,23 @@ different household (per task 7's multi-household switching) is excluded;
 an open (unclaimed) chore in the active household is excluded; and a
 request with no active session identity redirects to `/identity/` rather
 than rendering the list.
+
+## 22. Cap or paginate the history view
+Goal: Keep the history view (task 15) from rendering an unbounded page as a
+household's `WeeklyCompletion` log grows over months of use.
+Description: Task 15's history view intentionally has no limit on how many
+week groups or completions it queries/renders — scoping that decision was
+out of scope for task 15 itself, since it's a growth concern rather than a
+correctness one, and flagging it as its own backlog item keeps task 15
+focused on grouping/ordering/isolation correctness. Add a bound to the
+history view: either cap it to the most recent N weeks (e.g. the last 12) or
+add pagination (e.g. a `?page=` query param, or a "load more" control),
+picking whichever fits the existing plain-template/no-JS-framework
+conventions (per `AGENTS.md`) most simply. Decide and document which
+approach was taken as part of implementing this task.
+Include tests asserting: a household with more than the chosen limit's worth
+of distinct `week_start_date`s only renders the most recent N (or the first
+page, if paginated) by default; the most-recent-first ordering established
+in task 15 is preserved under the new bound; and a household with fewer
+weeks of history than the limit is unaffected (renders exactly as task 15
+already specifies, with no missing or duplicated weeks).
