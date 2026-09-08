@@ -1,4 +1,5 @@
 from django.db import IntegrityError, transaction
+from django.db.models import Sum
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
@@ -265,6 +266,47 @@ def complete_chore(request, chore_id):
     chore.save()
 
     return JsonResponse({"status": "completed", "points_awarded": points_awarded})
+
+
+@require_identity
+def points_board(request):
+    # Read-only view of each household member's point total for the
+    # current week. Wrapped in the task 4 identity guard, so a session
+    # with no active identity redirects to /identity/ instead of
+    # rendering here. Resolves the active household the same way
+    # chore_pool/claim_chore/release_chore/complete_chore do.
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    week_start = current_week_start()
+
+    totals_by_user_id = {
+        row["user_id"]: row["total"]
+        for row in (
+            WeeklyCompletion.objects.filter(household=household, week_start_date=week_start)
+            .values("user_id")
+            .annotate(total=Sum("points_awarded"))
+        )
+    }
+
+    # Every member of the active household appears on the board, even
+    # with zero completions this week (falling back to 0 below) — the
+    # point of the board is to surface "did nothing", not hide it.
+    members = HouseholdMember.objects.filter(household=household).select_related("user")
+
+    board = sorted(
+        (
+            {"user": member.user, "total": totals_by_user_id.get(member.user_id, 0)}
+            for member in members
+        ),
+        # Descending by total, ties broken alphabetically by name,
+        # case-insensitively (a naive case-sensitive sort would put
+        # "Bob" before "adam", which isn't true alphabetical order).
+        key=lambda entry: (-entry["total"], entry["user"].name.lower()),
+    )
+
+    return render(request, "chores/points_board.html", {"board": board})
 
 
 def _create_household_with_retry(name):

@@ -1200,3 +1200,129 @@ class CompleteChoreViewTests(TestCase):
         self.assertEqual(WeeklyCompletion.objects.count(), 0)
         chore.refresh_from_db()
         self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+
+
+class PointsBoardViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def _make_chore(self, household=None, points=5):
+        return Chore.objects.create(
+            household=household or self.household, name="Dishes", room="Kitchen", points=points
+        )
+
+    def _complete(self, user, household=None, points=5, week_start_date=None):
+        household = household or self.household
+        chore = self._make_chore(household=household, points=points)
+        return WeeklyCompletion.objects.create(
+            chore=chore,
+            household=household,
+            user=user,
+            points_awarded=points,
+            week_start_date=week_start_date or current_week_start(),
+        )
+
+    def test_user_with_one_completion_this_week_shows_that_total(self):
+        self._complete(self.user, points=5)
+
+        response = self.client.get("/points/")
+
+        self.assertEqual(response.status_code, 200)
+        board = response.context["board"]
+        self.assertEqual(len(board), 1)
+        self.assertEqual(board[0]["user"], self.user)
+        self.assertEqual(board[0]["total"], 5)
+
+    def test_user_with_multiple_completions_this_week_shows_sum(self):
+        self._complete(self.user, points=5)
+        self._complete(self.user, points=3)
+
+        response = self.client.get("/points/")
+
+        board = response.context["board"]
+        self.assertEqual(len(board), 1)
+        self.assertEqual(board[0]["total"], 8)
+
+    def test_member_with_no_completions_appears_with_zero_total(self):
+        other_member = User.objects.create(name="Jamie")
+        HouseholdMember.objects.create(user=other_member, household=self.household)
+
+        response = self.client.get("/points/")
+
+        board = response.context["board"]
+        users_and_totals = {entry["user"]: entry["total"] for entry in board}
+        self.assertIn(other_member, users_and_totals)
+        self.assertEqual(users_and_totals[other_member], 0)
+
+    def test_completion_from_different_household_excluded_even_with_same_name(self):
+        same_name_user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=same_name_user, household=self.other_household)
+        self._complete(same_name_user, household=self.other_household, points=10)
+
+        response = self.client.get("/points/")
+
+        board = response.context["board"]
+        self.assertEqual(len(board), 1)
+        self.assertEqual(board[0]["user"], self.user)
+        self.assertEqual(board[0]["total"], 0)
+
+    def test_completion_from_previous_week_excluded(self):
+        previous_week = current_week_start() - datetime.timedelta(days=7)
+        self._complete(self.user, points=5, week_start_date=previous_week)
+
+        response = self.client.get("/points/")
+
+        board = response.context["board"]
+        self.assertEqual(board[0]["total"], 0)
+
+    def test_completion_from_future_week_excluded(self):
+        future_week = current_week_start() + datetime.timedelta(days=7)
+        self._complete(self.user, points=5, week_start_date=future_week)
+
+        response = self.client.get("/points/")
+
+        board = response.context["board"]
+        self.assertEqual(board[0]["total"], 0)
+
+    def test_tied_members_ordered_case_insensitively_alphabetically(self):
+        # "bob" (lowercase) must sort after "Alice" despite SQLite's
+        # default case-sensitive CharField collation putting uppercase
+        # before lowercase in a naive sort.
+        bob = User.objects.create(name="bob")
+        HouseholdMember.objects.create(user=bob, household=self.household)
+        alice = User.objects.create(name="Alice")
+        HouseholdMember.objects.create(user=alice, household=self.household)
+
+        self._complete(bob, points=4)
+        self._complete(alice, points=4)
+        self._complete(self.user, points=4)
+
+        response = self.client.get("/points/")
+
+        board = response.context["board"]
+        names_in_order = [entry["user"].name for entry in board]
+        self.assertEqual(names_in_order, ["Alex", "Alice", "bob"])
+
+    def test_household_with_only_current_user_renders_200(self):
+        response = self.client.get("/points/")
+
+        self.assertEqual(response.status_code, 200)
+        board = response.context["board"]
+        self.assertEqual(len(board), 1)
+        self.assertEqual(board[0]["user"], self.user)
+        self.assertEqual(board[0]["total"], 0)
+
+    def test_no_active_identity_redirects_to_identity(self):
+        fresh_client = Client()
+        response = fresh_client.get("/points/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
