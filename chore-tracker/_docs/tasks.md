@@ -478,7 +478,7 @@ does not change the chore's `status` and returns a non-2xx (405) response;
 and a request with no active session identity redirects to `/identity/`
 rather than performing the release.
 
-## 12. Complete a chore and award points
+## 12. Complete a chore and award points — Completed 2026-09-07 17:10 PDT
 Goal: Let the claiming user mark a chore done and award its points for the
 current week.
 Description: Build an action endpoint (e.g. POST `/chores/<id>/complete/`,
