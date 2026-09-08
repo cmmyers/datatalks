@@ -1326,3 +1326,150 @@ class PointsBoardViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/identity/")
+
+
+class WeeklyRolloverTests(TestCase):
+    """Locks in that crossing a week boundary mutates nothing.
+
+    No batch job, cron, or management command computes a weekly reset
+    anywhere in this codebase (task 14) — the points board (task 13) simply
+    re-queries WeeklyCompletion scoped to current_week_start() at read time,
+    and nothing else touches Chore.status/claimed_by on a schedule. These
+    tests simulate crossing the Sunday-to-Monday boundary the same way
+    CurrentWeekStartTests does (patching chores.weeks.timezone.localdate)
+    and assert that existing Chore and WeeklyCompletion rows come back
+    byte-for-byte identical, and that hitting the points board across the
+    boundary performs no writes.
+    """
+
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+        # Same boundary CurrentWeekStartTests.test_straddles_sunday_to_monday_boundary
+        # uses: previous_sunday's week starts previous_monday; next_monday starts
+        # its own new week.
+        self.previous_sunday = datetime.date(2026, 9, 6)
+        self.next_monday = datetime.date(2026, 9, 7)
+
+    def test_claimed_chore_unchanged_across_week_boundary(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+        pre_status = chore.status
+        pre_claimed_by_id = chore.claimed_by_id
+
+        with patch("chores.weeks.timezone.localdate", return_value=self.next_monday):
+            chore.refresh_from_db()
+
+        self.assertEqual(chore.status, pre_status)
+        self.assertEqual(chore.claimed_by_id, pre_claimed_by_id)
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+        self.assertEqual(chore.claimed_by_id, self.user.id)
+
+    def test_open_chore_unchanged_across_week_boundary(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Laundry", room="Bedroom", points=3
+        )
+        pre_status = chore.status
+        pre_claimed_by_id = chore.claimed_by_id
+
+        with patch("chores.weeks.timezone.localdate", return_value=self.next_monday):
+            chore.refresh_from_db()
+
+        self.assertEqual(chore.status, pre_status)
+        self.assertEqual(chore.claimed_by_id, pre_claimed_by_id)
+        self.assertEqual(chore.status, Chore.STATUS_OPEN)
+        self.assertIsNone(chore.claimed_by_id)
+
+    def test_weekly_completion_unchanged_across_week_boundary(self):
+        with patch("chores.weeks.timezone.localdate", return_value=self.previous_sunday):
+            week_start = current_week_start()
+
+        chore = Chore.objects.create(
+            household=self.household, name="Trash", room="Kitchen", points=4
+        )
+        completion = WeeklyCompletion.objects.create(
+            chore=chore,
+            household=self.household,
+            user=self.user,
+            points_awarded=4,
+            week_start_date=week_start,
+        )
+        pre = {
+            "points_awarded": completion.points_awarded,
+            "week_start_date": completion.week_start_date,
+            "chore_id": completion.chore_id,
+            "user_id": completion.user_id,
+            "household_id": completion.household_id,
+            "completed_at": completion.completed_at,
+        }
+
+        with patch("chores.weeks.timezone.localdate", return_value=self.next_monday):
+            completion.refresh_from_db()
+
+        self.assertEqual(completion.points_awarded, pre["points_awarded"])
+        self.assertEqual(completion.week_start_date, pre["week_start_date"])
+        self.assertEqual(completion.chore_id, pre["chore_id"])
+        self.assertEqual(completion.user_id, pre["user_id"])
+        self.assertEqual(completion.household_id, pre["household_id"])
+        self.assertEqual(completion.completed_at, pre["completed_at"])
+
+    def test_points_board_get_across_boundary_has_no_write_side_effects(self):
+        with patch("chores.weeks.timezone.localdate", return_value=self.previous_sunday):
+            week_start = current_week_start()
+
+        chore = Chore.objects.create(
+            household=self.household, name="Vacuum", room="Living Room", points=6
+        )
+        WeeklyCompletion.objects.create(
+            chore=chore,
+            household=self.household,
+            user=self.user,
+            points_awarded=6,
+            week_start_date=week_start,
+        )
+        count_before = WeeklyCompletion.objects.count()
+
+        with patch("chores.weeks.timezone.localdate", return_value=self.next_monday):
+            response = self.client.get("/points/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(WeeklyCompletion.objects.count(), count_before)
+
+    def test_prior_week_completion_excluded_from_new_total_but_survives_boundary(self):
+        with patch("chores.weeks.timezone.localdate", return_value=self.previous_sunday):
+            week_start = current_week_start()
+
+        chore = Chore.objects.create(
+            household=self.household, name="Mop", room="Kitchen", points=7
+        )
+        completion = WeeklyCompletion.objects.create(
+            chore=chore,
+            household=self.household,
+            user=self.user,
+            points_awarded=7,
+            week_start_date=week_start,
+        )
+
+        with patch("chores.weeks.timezone.localdate", return_value=self.next_monday):
+            response = self.client.get("/points/")
+
+        board = response.context["board"]
+        totals_by_user = {entry["user"]: entry["total"] for entry in board}
+        self.assertEqual(totals_by_user[self.user], 0)
+
+        completion.refresh_from_db()
+        self.assertEqual(completion.points_awarded, 7)
+        self.assertEqual(completion.week_start_date, week_start)
+        self.assertTrue(WeeklyCompletion.objects.filter(pk=completion.pk).exists())
