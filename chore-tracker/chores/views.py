@@ -341,6 +341,15 @@ def points_board(request):
     return render(request, "chores/points_board.html", {"board": board})
 
 
+HISTORY_WEEKS_LIMIT = 12
+# Task 22: the history view (below) intentionally caps how many distinct
+# week groups it renders, so a household's page doesn't grow unbounded as
+# its WeeklyCompletion log accumulates over months of use. A fixed number of
+# most-recent weeks (rather than ?page=/"load more" pagination) is enough
+# for this local homework project. Module-level so it's a single source of
+# truth tests can import instead of a magic number re-typed in assertions.
+
+
 @require_identity
 def history(request):
     # Read-only log of a household's completed chores, grouped by week, most
@@ -350,13 +359,23 @@ def history(request):
     # do. Every week with at least one completion is shown, including the
     # week-in-progress (current_week_start()) — nothing distinguishes a
     # "past" week from the current one in the data model, so this view must
-    # not filter it out.
+    # not filter it out. Capped to the HISTORY_WEEKS_LIMIT most recent
+    # distinct week_start_dates (task 22) so the page doesn't grow unbounded;
+    # the cap is computed within this same household-scoped queryset so one
+    # household's history never affects how many weeks another renders.
     current_user = get_current_user(request)
     membership = HouseholdMember.objects.get(user=current_user)
     household = membership.household
 
-    completions = (
+    recent_week_starts = (
         WeeklyCompletion.objects.filter(household=household)
+        .values_list("week_start_date", flat=True)
+        .distinct()
+        .order_by("-week_start_date")[:HISTORY_WEEKS_LIMIT]
+    )
+
+    completions = (
+        WeeklyCompletion.objects.filter(household=household, week_start_date__in=recent_week_starts)
         .select_related("user", "chore")
         .order_by("-week_start_date", "-completed_at", "-id")
     )

@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from chores.identity import get_current_user, require_identity, set_current_user
 from chores.models import Chore, Household, HouseholdMember, User, WeeklyCompletion
+from chores.views import HISTORY_WEEKS_LIMIT
 from chores.weeks import current_week_start
 
 
@@ -1624,6 +1625,87 @@ class HistoryViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/identity/")
+
+    def test_more_than_limit_weeks_renders_only_the_most_recent_limit(self):
+        # HISTORY_WEEKS_LIMIT + 2 distinct weeks of history: the two oldest
+        # must be excluded entirely, and the remaining HISTORY_WEEKS_LIMIT
+        # must be exactly the most recent ones, most-recent-first (task 22).
+        total_weeks = HISTORY_WEEKS_LIMIT + 2
+        week_starts = [
+            current_week_start() - datetime.timedelta(days=7 * i) for i in range(total_weeks)
+        ]
+        for i, week_start in enumerate(week_starts):
+            self._complete(points=i + 1, week_start_date=week_start)
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        self.assertEqual(len(weeks), HISTORY_WEEKS_LIMIT)
+        rendered_week_starts = [week["week_start_date"] for week in weeks]
+        self.assertEqual(rendered_week_starts, week_starts[:HISTORY_WEEKS_LIMIT])
+        excluded_week_starts = week_starts[HISTORY_WEEKS_LIMIT:]
+        for excluded in excluded_week_starts:
+            self.assertNotIn(excluded, rendered_week_starts)
+        # The current week-in-progress is among the most recent
+        # HISTORY_WEEKS_LIMIT weeks, so it still appears (task 15/22).
+        self.assertIn(current_week_start(), rendered_week_starts)
+
+    def test_exactly_limit_weeks_renders_all_of_them(self):
+        # Boundary case: exactly HISTORY_WEEKS_LIMIT distinct weeks must all
+        # render, proving the cutoff isn't off-by-one in either direction.
+        week_starts = [
+            current_week_start() - datetime.timedelta(days=7 * i) for i in range(HISTORY_WEEKS_LIMIT)
+        ]
+        for i, week_start in enumerate(week_starts):
+            self._complete(points=i + 1, week_start_date=week_start)
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        self.assertEqual(len(weeks), HISTORY_WEEKS_LIMIT)
+        rendered_week_starts = [week["week_start_date"] for week in weeks]
+        self.assertEqual(rendered_week_starts, week_starts)
+
+    def test_fewer_than_limit_weeks_renders_all_with_no_gaps(self):
+        # Fewer than HISTORY_WEEKS_LIMIT distinct weeks is unaffected by the
+        # cap — renders exactly as task 15 already specifies.
+        week_starts = [current_week_start() - datetime.timedelta(days=7 * i) for i in range(3)]
+        for i, week_start in enumerate(week_starts):
+            self._complete(points=i + 1, week_start_date=week_start)
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        self.assertEqual(len(weeks), 3)
+        rendered_week_starts = [week["week_start_date"] for week in weeks]
+        self.assertEqual(rendered_week_starts, week_starts)
+
+    def test_other_households_history_does_not_affect_active_households_week_count(self):
+        # Household isolation under the cap: a second household with more
+        # than HISTORY_WEEKS_LIMIT weeks of its own history must not affect
+        # how many weeks render for the active household.
+        other_user = User.objects.create(name="Jamie")
+        HouseholdMember.objects.create(user=other_user, household=self.other_household)
+        for i in range(HISTORY_WEEKS_LIMIT + 5):
+            self._complete(
+                user=other_user,
+                household=self.other_household,
+                points=1,
+                week_start_date=current_week_start() - datetime.timedelta(days=7 * i),
+            )
+
+        active_week_starts = [
+            current_week_start() - datetime.timedelta(days=7 * i) for i in range(3)
+        ]
+        for i, week_start in enumerate(active_week_starts):
+            self._complete(points=i + 1, week_start_date=week_start)
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        self.assertEqual(len(weeks), 3)
+        rendered_week_starts = [week["week_start_date"] for week in weeks]
+        self.assertEqual(rendered_week_starts, active_week_starts)
 
 
 class HouseholdSettingsViewTests(TestCase):
