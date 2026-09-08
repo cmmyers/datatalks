@@ -5,6 +5,18 @@
 {% block content %}
     <h1>Chore pool</h1>
 
+    {% if show_new_household_banner %}
+        <div id="new-household-banner">
+            <p>
+                Household created! Share this join code so others can join:
+                <span id="new-household-join-code">{{ new_household_join_code }}</span>
+                <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('new-household-join-code').textContent)">
+                    Copy
+                </button>
+            </p>
+        </div>
+    {% endif %}
+
     {% if chores %}
         <ul>
             {% for chore in chores %}

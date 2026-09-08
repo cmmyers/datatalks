@@ -2293,3 +2293,93 @@ class BaseLayoutNavigationTests(TestCase):
         response = self.client.get(f"/chores/{chore.id}/edit/")
 
         self.assertContains(response, "<title>Edit chore</title>")
+
+
+class NewHouseholdBannerTests(TestCase):
+    def test_first_visit_after_creation_shows_banner_with_actual_join_code(self):
+        self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+        household = Household.objects.get(name="Smith House")
+
+        response = self.client.get("/chores/")
+
+        self.assertContains(response, household.join_code)
+        self.assertTrue(response.context["show_new_household_banner"])
+        self.assertEqual(response.context["new_household_join_code"], household.join_code)
+
+    def test_second_visit_in_same_session_does_not_show_banner_again(self):
+        self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+        household = Household.objects.get(name="Smith House")
+
+        self.client.get("/chores/")
+        response = self.client.get("/chores/")
+
+        self.assertFalse(response.context["show_new_household_banner"])
+        self.assertNotIn("new_household_join_code", response.context)
+        self.assertNotContains(response, household.join_code)
+
+    def test_joining_a_household_never_shows_banner(self):
+        household = Household.objects.create(name="Smith House", join_code="JOINME1")
+        existing_user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=existing_user, household=household)
+
+        self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOINME1", "display_name": "Jamie"},
+        )
+        response = self.client.get("/chores/")
+
+        self.assertFalse(response.context["show_new_household_banner"])
+        self.assertNotContains(response, "JOINME1")
+
+    def test_switching_identity_to_previously_created_household_does_not_show_banner(self):
+        # Create a first household (sets the banner flag), consume it with a
+        # /chores/ visit, then join a second household and switch back to
+        # the first identity. Switching itself must not set or resurrect
+        # the flag.
+        self.client.post(
+            "/identity/",
+            {"household_name": "Smith House", "display_name": "Alex"},
+        )
+        first_household = Household.objects.get(name="Smith House")
+        first_user = User.objects.get(name="Alex")
+        self.client.get("/chores/")  # consume the flag from creation
+
+        second_household = Household.objects.create(name="Jones House", join_code="JOIN2")
+        self.client.post(
+            "/identity/",
+            {"action": "join", "join_code": "JOIN2", "display_name": "Jamie"},
+        )
+
+        self.client.post("/switch/", {"user_id": first_user.id})
+        response = self.client.get("/chores/")
+
+        self.assertFalse(response.context["show_new_household_banner"])
+        self.assertNotContains(response, first_household.join_code)
+        self.assertNotContains(response, second_household.join_code)
+
+    def test_creating_two_households_back_to_back_shows_second_households_code(self):
+        self.client.post(
+            "/identity/",
+            {"household_name": "First House", "display_name": "Alex"},
+        )
+        first_household = Household.objects.get(name="First House")
+        self.client.get("/chores/")  # consume the first flag
+
+        self.client.post(
+            "/identity/",
+            {"household_name": "Second House", "display_name": "Riley"},
+        )
+        second_household = Household.objects.get(name="Second House")
+
+        response = self.client.get("/chores/")
+
+        self.assertTrue(response.context["show_new_household_banner"])
+        self.assertEqual(response.context["new_household_join_code"], second_household.join_code)
+        self.assertContains(response, second_household.join_code)
+        self.assertNotContains(response, first_household.join_code)

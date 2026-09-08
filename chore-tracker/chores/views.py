@@ -65,6 +65,7 @@ def _handle_create(request):
     user = User.objects.create(name=display_name)
     HouseholdMember.objects.create(user=user, household=household)
     set_current_user(request, user)
+    request.session["show_new_household_banner"] = True
     return None
 
 
@@ -161,7 +162,12 @@ def chore_pool(request):
         "name", "id"
     )
 
-    return render(request, "chores/chore_pool.html", {"chores": chores})
+    show_new_household_banner = request.session.pop("show_new_household_banner", False)
+    context = {"chores": chores, "show_new_household_banner": show_new_household_banner}
+    if show_new_household_banner:
+        context["new_household_join_code"] = household.join_code
+
+    return render(request, "chores/chore_pool.html", context)
 
 
 @require_identity
