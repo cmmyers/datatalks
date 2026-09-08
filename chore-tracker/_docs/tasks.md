@@ -867,13 +867,83 @@ criteria and edge cases when their turn comes up.
 
 ---
 
-## 18. Base layout and navigation
-Goal: Give the app a consistent shell so all the views feel like one product.
-Description: Build a base Django template (nav linking to chore pool, points
-board, history, settings, household switcher) that other view templates
-extend, plus minimal shared CSS. No new backend logic — this is purely
-wiring existing views into a coherent layout. Manually click through each
-linked page to confirm navigation works.
+## 18. Base layout and navigation — Completed 2026-09-08 04:55 PDT
+Goal: Give the app a consistent shell — shared nav and minimal CSS — so the
+views that exist today feel like one product instead of a set of
+disconnected standalone pages.
+Description: Add `chores/templates/chores/base.html`: a `<!DOCTYPE html>`
+shell with `<meta charset="utf-8">`, a `{% block title %}{% endblock %}`
+inside `<title>`, minimal shared CSS (plain `<style>` block or a linked
+static CSS file — no framework/build step, per `AGENTS.md`), a `<nav>`
+element (give it a stable marker, e.g. `<nav id="site-nav">`, so tests can
+scope assertions to it) containing links built with `{% url %}` — never
+hardcoded paths — to the chore pool (`chore_pool`, `/chores/`), points board
+(`points_board`, `/points/`), history (`history`, `/history/`), household
+settings (`household_settings`, `/settings/`), and the household switcher
+(`switch_identity`, `/switch/`), and a `{% block content %}{% endblock %}`
+for page-specific markup. This task touches templates only — no
+`views.py`/`urls.py`/model changes, and no view needs to start passing new
+context; the nav's five links are static markup, not conditioned on any
+per-view data.
+
+Convert every existing template to extend `base.html`, keeping each page's
+current substantive content (chore list, points-board table, history groups,
+settings forms/lists, chore-edit form, switch-identity list, including all
+existing dynamic values, error messages, and the task 17 copy-to-clipboard
+button) unchanged inside `{% block content %}` — this is a restyle/rewire,
+not a rewrite of what any page shows: `index.html`, `chore_pool.html`,
+`points_board.html`, `history.html`, `household_settings.html`,
+`chore_edit.html`, and `switch_identity.html`. Per task 9's forward note
+("task 18 should extend/restyle this same index/root page ... rather than
+introduce a competing landing page"), `index.html` drops its own now-
+redundant inline `<ul>` of links to `/chores/` and `/switch/` — that
+navigation now lives in the shared nav — and keeps a short welcome
+heading/intro in its content block.
+
+`choose_identity.html` (`/identity/`) is explicitly **out of scope** and
+stays a standalone full-HTML document, not converted to extend `base.html`:
+it's the task 4 guard's own redirect target, reachable precisely when a
+session has *no* active identity, so wiring it into a nav whose links all
+point at guarded pages would only show links that immediately bounce the
+visitor back to `/identity/` — dead weight rather than useful navigation.
+
+Task 21's "my claimed chores" view isn't built yet, so the nav does not get
+a sixth link for it now — see task 23 (appended below) for adding that link
+once task 21 lands, rather than stubbing a dead link today.
+
+The shared CSS itself has no server-observable behavior a Django test client
+can assert on (mirroring task 17's copy-button caveat) — treat visual
+styling as a manual/visual check only: after making these changes, manually
+click through each nav link from a signed-in session to confirm every linked
+page loads and the nav renders consistently.
+
+Include tests asserting: for a signed-in session, GET on each of `/`,
+`/chores/`, `/points/`, `/history/`, `/settings/`, and `/switch/` returns 200
+and the rendered response contains all five nav link URLs (`/chores/`,
+`/points/`, `/history/`, `/settings/`, `/switch/`); GET
+`/chores/<id>/edit/` for a chore in the active household (task 16) also
+returns 200 and contains those same five nav link URLs; each of those six
+pages' pre-existing content still renders correctly after the conversion —
+reuse/extend each task's existing content assertions (e.g., the chore pool
+still shows an open chore's name per task 8, the points board still shows a
+member's total per task 13, history still shows a completion per task 15,
+settings still shows the join code and member list per task 17, switch
+identity still shows known identities per task 7) rather than re-deriving
+new assertions, so a wiring regression is caught without duplicating
+already-covered behavior; GET `/identity/` with no active session identity
+still returns 200 and does **not** contain the five nav link URLs (proving
+the shared nav is scoped to signed-in/guarded pages, not leaked onto a page
+a signed-out session can't use its links from); GET `/` with an active
+identity no longer contains its old standalone `<ul>` of exactly `/chores/`
+and `/switch/` as inline body content (superseded by the shared nav) while
+still returning 200 and still containing those URLs via the nav itself —
+distinguish the two by asserting the nav's marker (e.g. `id="site-nav"`)
+wraps the links, not just checking for the bare hrefs anywhere in the page;
+and each converted template's rendered `<title>` still reflects that specific
+page rather than a generic shell title shared across all of them — e.g.
+`<title>Chore pool</title>` for `/chores/` and `<title>Points board</title>`
+for `/points/` — confirming the `{% block title %}` inheritance actually
+fills in per page.
 
 ## 19. Show join code immediately after creating a household
 Goal: Let a household's creator see and copy the join code right away,
@@ -946,3 +1016,22 @@ page, if paginated) by default; the most-recent-first ordering established
 in task 15 is preserved under the new bound; and a household with fewer
 weeks of history than the limit is unaffected (renders exactly as task 15
 already specifies, with no missing or duplicated weeks).
+
+## 23. Add "My claimed chores" to the shared nav
+Goal: Keep the shared nav (task 18) complete once task 21's "my claimed
+chores" view exists, since task 18 intentionally ships without a link to it
+because task 21 isn't built yet at that point in the backlog.
+Description: Extend `chores/templates/chores/base.html`'s `<nav>` (task 18)
+with a sixth link, built with `{% url 'my_claimed_chores' %}` (task 21,
+`/chores/mine/`), alongside the existing five links (chore pool, points
+board, history, settings, household switcher). No other change to
+`base.html`'s structure or shared CSS is needed — this is purely adding one
+more link to the same nav list, and no other converted template needs any
+change.
+Include tests asserting: for a signed-in session, GET on each of the
+nav-bearing pages (`/`, `/chores/`, `/chores/mine/`, `/points/`,
+`/history/`, `/settings/`, `/switch/`, and `/chores/<id>/edit/`) returns 200
+and the rendered response contains all six nav link URLs, including
+`/chores/mine/`, extending task 18's five-link assertion to six; and GET
+`/identity/` with no active session identity still does not contain any of
+the six nav link URLs, mirroring task 18's same scoping assertion.
