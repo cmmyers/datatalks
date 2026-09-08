@@ -188,6 +188,39 @@ def claim_chore(request, chore_id):
     return JsonResponse({"status": "claimed"})
 
 
+@require_identity
+def release_chore(request, chore_id):
+    # Action endpoint: release a chore the current session's identity holds
+    # a claim on, putting it back in the open pool. Wrapped in the task 4
+    # identity guard, so a session with no active identity redirects to
+    # /identity/ instead of running. Only POST (or another mutating method)
+    # performs the release; a GET returns 405.
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed."}, status=405)
+
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    # Household filter is part of the query itself, not a Python check
+    # applied after fetching by id, so isolation holds structurally: a
+    # chore id belonging to a different household is indistinguishable
+    # from a nonexistent one (404).
+    chore = get_object_or_404(Chore, id=chore_id, household=household)
+
+    if chore.status != Chore.STATUS_CLAIMED:
+        return JsonResponse({"error": "Chore is not claimed."}, status=409)
+
+    if chore.claimed_by_id != current_user.id:
+        return JsonResponse({"error": "Chore is claimed by someone else."}, status=403)
+
+    chore.status = Chore.STATUS_OPEN
+    chore.claimed_by = None
+    chore.save()
+
+    return JsonResponse({"status": "open"})
+
+
 def _create_household_with_retry(name):
     """Create a Household, regenerating join_code on a collision.
 
