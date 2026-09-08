@@ -945,15 +945,82 @@ page rather than a generic shell title shared across all of them — e.g.
 for `/points/` — confirming the `{% block title %}` inheritance actually
 fills in per page.
 
-## 19. Show join code immediately after creating a household
+## 19. Show join code immediately after creating a household — Completed 2026-09-08 05:10 PDT
 Goal: Let a household's creator see and copy the join code right away,
 without having to first navigate to settings.
-Description: After a household is created (task 5) and the session redirects
-to the chore pool, surface the new `join_code` somewhere immediately visible
-to the creator — e.g. a one-time confirmation banner or interstitial page
-shown right after creation — distinct from the permanent join-code display
-built in household settings (task 17). Test that the code shown immediately
-after creation matches the household's stored `join_code`.
+Description: Extend `_handle_create` (`chores/views.py`, task 5) so that,
+immediately after creating the `Household`/`User`/`HouseholdMember` rows and
+calling `set_current_user`, it also sets a one-time session flag — e.g.
+`request.session["show_new_household_banner"] = True` — before
+`choose_identity` redirects to `chore_pool` (task 8, updated to
+`redirect("chore_pool")` by task 8). `_handle_join` (task 6) and
+`switch_identity`'s POST success path (task 7) must **not** set this flag —
+the banner is specific to *creating* a household, not joining one or
+switching into one.
+
+Extend `chore_pool` (`chores/views.py`, task 8) to consume the flag on the
+very next render: `show_new_household_banner =
+request.session.pop("show_new_household_banner", False)`. Using `.pop()`
+(not `.get()`) is what makes this one-time — the key is removed from the
+session the instant it's read, so a page reload, a second GET to `/chores/`,
+or navigating away and back via the shared nav (task 18) never shows the
+banner again for that session, even though the flag was set only moments
+earlier. `chore_pool` doesn't currently pass `household` to its template
+(only `chores`) — add two context keys instead of the whole object:
+`show_new_household_banner` (the popped boolean) and
+`new_household_join_code`, set to `household.join_code` (from the same
+`household` variable the view already resolves via the current user's
+`HouseholdMember` row for its chore-list query) when the flag is `True`, or
+omitted/`None` when it's `False`. Do not stash the join code (or a household
+id) inside the session flag itself and read it back from there — always
+derive `new_household_join_code` from that request's live `household`
+lookup. Because `chore_pool` re-resolves the active household from the
+session's *current* identity on every request, and the flag is popped on
+this exact request, the code shown can never drift to a different
+household — including across task 7's multi-household switching, where a
+session's active identity (and thus active household) can change between the
+create POST and any later GET to `/chores/`.
+
+Add the banner markup to `chores/templates/chores/chore_pool.html`, inside
+`{% block content %}`, conditioned on `show_new_household_banner` — e.g. a
+`<div id="new-household-banner">` containing explanatory text and the code
+in its own element, e.g. `<span id="new-household-join-code">{{
+new_household_join_code }}</span>`, so tests can assert on the code precisely
+rather than scraping surrounding prose. This is a one-time interstitial
+banner, distinct from task 17's permanent join-code display in household
+settings: task 17's `{{ household.join_code }}` in
+`household_settings.html` renders on *every* GET to `/settings/` for as long
+as the household exists, with no session state involved, while this banner
+renders at most once — only on the single `chore_pool` render immediately
+following creation — and never again afterward for that session, even for
+that same household.
+
+This task touches `_handle_create`, `chore_pool`, and `chore_pool.html`
+only — no new URL, no new view, no model changes, and no change to
+`_handle_join`, `switch_identity`, or `household_settings`.
+
+Include tests asserting: submitting a valid create-household form, then
+following the redirect with a GET to `/chores/` in that same test-client
+session, renders the banner containing the household's actual `join_code`
+(assert the response contains that exact string, read back from
+`Household.objects.get(...).join_code` in the DB — not a hardcoded/guessed
+value); a second GET to `/chores/` in that same session immediately
+afterward (simulating a reload or re-visiting via the nav) does **not**
+render the banner or the join code, proving the flag is one-time and cleared
+after its first consumption; joining an existing household (task 6) and then
+GETing `/chores/` never renders the banner, since only creation sets the
+flag; switching identity (task 7, POST to `/switch/`) to a different,
+previously-created household and then GETing `/chores/` does not render the
+banner (switching itself never sets the flag, and any flag set by that
+household's own earlier creation was already consumed the first time
+`/chores/` was visited right after creating it); and a session that creates
+two households back to back (POSTing to `/identity/` with `action=create` a
+second time while already holding an active identity — `choose_identity` is
+unguarded, so this is reachable today without waiting on task 20) sees, after
+the *second* creation, a banner showing the *second* household's join code
+specifically — not the first's — confirming the code always matches the
+currently active household rather than a stale one from an earlier creation
+in the same session.
 
 ## 20. Link from the household switcher to create/join another household
 Goal: Let someone already viewing the switcher (task 7) add a new household
