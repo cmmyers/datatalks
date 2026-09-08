@@ -655,14 +655,6 @@ present in the database (re-asserting
 paired with a DB check that the row survived unmodified, closing the gap
 that test alone doesn't check for).
 
----
-
-**Tasks 15 and below have not been groomed yet** — they still reflect the
-original backlog language and will be reviewed for checkable acceptance
-criteria and edge cases when their turn comes up.
-
----
-
 ## 15. History view — Completed 2026-09-07 18:10 PDT
 Goal: Show a log of a household's completed chores, grouped by week, so
 members can see who did what and how many points it earned over time — not
@@ -718,12 +710,105 @@ the week rolls over; a household with zero `WeeklyCompletion` rows renders
 active session identity redirects to `/identity/` rather than rendering
 history.
 
-## 16. Household settings — manage chores
-Goal: Let members add and edit chores in the pool.
-Description: Build views/forms to create a new chore (name, room, points) and
-edit an existing one, scoped to the active household. Test that chores
-created here appear in the chore pool view and that editing updates the
-right record.
+## 16. Household settings — manage chores — Completed 2026-09-07 18:35 PDT
+Goal: Let members add new chores to the pool and edit existing ones (name,
+room, points), scoped to the active household.
+Description: Build a new view (e.g. URL `/settings/` named
+`household_settings`) wrapped in the task 4 `require_identity` guard, so a
+request with no active session identity redirects (302) to `/identity/`
+instead of rendering. Resolve the active household via the current user's
+`HouseholdMember` row (same lookup as tasks 8, 10-13, 15). On GET, render
+every `Chore` row belonging to that household — not just `status="open"`
+ones (unlike task 8's chore pool, this page is for managing the whole pool,
+so a `claimed` chore must still show up here to be editable) — ordered the
+same deterministic way as task 8 (`order_by("name", "id")`), each with a
+link to `/chores/<id>/edit/`, plus an empty "add a chore" form (name, room,
+points). Task 17 will extend this same `/settings/` page with the join-code
+and member-list sections, mirroring how tasks 5/6 both extend
+`choose_identity` rather than introducing competing pages.
+
+Follow the `choose_identity` form-handling pattern (tasks 5/6): GET renders,
+POST processes, and a rejected submission re-renders the form with an error
+and creates/changes no rows rather than raising a server error. On POST to
+`/settings/`, treat the submission as the "add a chore" form. Validate
+before ever touching the model layer — `Chore.save()` calls `full_clean()`
+(task 3), so handing it bad data directly would surface as an unhandled
+`ValidationError`, not a friendly re-rendered form: strip `name` and `room`
+and reject (re-render with an error, no `Chore` created) if either is blank
+after stripping; parse `points` and reject the same way if it isn't a valid
+integer, or is `0` or negative (mirroring `Chore.points`'s
+`MinValueValidator(1)`, task 3) — a non-numeric string (e.g. `"abc"`) and a
+non-integer numeric string (e.g. `"3.5"`) both count as invalid input here,
+same as `0` or a negative value. `Chore.name` has no uniqueness constraint
+(task 8 already established this — two chores in a household can share a
+name), so unlike `User`/`Household` names, no duplicate check is needed. On
+a valid submission, create a `Chore` with `household` set to the active
+household, the stripped `name`/`room`, the parsed `points`, and let
+`status`/`claimed_by` take their model defaults (`open`/unset) — a chore
+created here is never pre-claimed — then redirect (302) back to
+`/settings/` rather than re-rendering.
+
+Build a second view (URL `/chores/<id>/edit/`, named `chore_edit`), also
+wrapped in `require_identity`. Look up the target `Chore` scoped to the
+active household in one query — `get_object_or_404(Chore, id=chore_id,
+household=household)`, the same structural pattern tasks 10-12 use for
+claim/release/complete — on both GET and POST, so a chore id belonging to a
+different household is indistinguishable from a nonexistent one (404)
+whether you're loading the edit form or submitting it, not only on
+submission. On GET, render a form pre-filled with the chore's current
+`name`, `room`, and `points`. On POST, apply the same validation as the
+create form above (blank name/room after stripping, non-integer/zero/
+negative points all rejected with a re-rendered form and no change to the
+`Chore` row); on success, update only `name`, `room`, and `points` on the
+existing row and redirect (302) to `/settings/`. Editing must never touch
+`status` or `claimed_by` — those fields are owned exclusively by the
+claim/release/complete actions (tasks 10-12), not by this form, so editing a
+chore that is currently `claimed` must leave its `status`/`claimed_by`
+exactly as they were, even though its `name`/`room`/`points` change.
+Likewise, per task 3's design (`WeeklyCompletion.points_awarded` is its own
+stored value, independent of `Chore.points`, "so that editing a chore's
+point value later (task 16) never rewrites already-recorded history"),
+editing a chore's `points` after a `WeeklyCompletion` referencing it already
+exists must leave that completion's `points_awarded` completely unchanged —
+this task is exactly the "later" edit task 3 was written in anticipation of.
+
+Include tests asserting: submitting a valid add-chore form on `/settings/`
+creates exactly one `Chore` in the active household with the submitted
+(stripped) `name`/`room` and parsed `points`, `status="open"`, and no
+`claimed_by`; that new chore then appears in the chore pool view (task 8,
+`/chores/`) with the same name/room/points, proving the two views agree;
+submitting the add-chore form with a blank (or whitespace-only) `name` or
+`room`, or with `points` that is non-numeric, zero, or negative, re-renders
+`/settings/` with an error and creates no `Chore`; GET `/settings/` lists
+every chore in the active household regardless of `status` (both `open` and
+`claimed` chores appear) and excludes chores belonging to other households;
+GET `/chores/<id>/edit/` for a chore in the active household returns 200
+with the form pre-filled with that chore's current values; submitting a
+valid edit updates that exact `Chore` row's `name`/`room`/`points`
+(confirmed by re-fetching from the DB) and redirects to `/settings/`;
+submitting an edit with a blank name/room or invalid points (non-numeric,
+zero, negative) re-renders the edit form with an error and leaves the
+`Chore` row completely unchanged; editing a chore that is currently
+`status="claimed"` with some `claimed_by` set updates its `name`/`room`/
+`points` but leaves `status` and `claimed_by` exactly as they were before
+the edit; editing a chore's `points` after a `WeeklyCompletion` row already
+references it (created via direct model creation in the test, as task 12's
+tests do) leaves that `WeeklyCompletion.points_awarded` unchanged; GET or
+POST to `/chores/<id>/edit/` for a chore id belonging to a different
+household returns 404 and leaves that chore's row completely unchanged, so
+household isolation holds against a guessed/crafted id; GET or POST to
+`/chores/<id>/edit/` for a nonexistent chore id returns 404; and a request
+to either `/settings/` or `/chores/<id>/edit/` with no active session
+identity redirects to `/identity/` rather than rendering or processing the
+form.
+
+---
+
+**Tasks 17 and below have not been groomed yet** — they still reflect the
+original backlog language and will be reviewed for checkable acceptance
+criteria and edge cases when their turn comes up.
+
+---
 
 ## 17. Household settings — join code and member list
 Goal: Let members view/copy the household's join code and see who's in it.
