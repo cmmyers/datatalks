@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>History</title>
+</head>
+<body>
+    <h1>History</h1>
+
+    {% if weeks %}
+        {% for week in weeks %}
+            <h2>Week of {{ week.week_start_date }} - {{ week.total }} points</h2>
+            <ul>
+                {% for completion in week.completions %}
+                    <li>{{ completion.user.name }} completed {{ completion.chore.name }} - {{ completion.points_awarded }} points ({{ completion.completed_at }})</li>
+                {% endfor %}
+            </ul>
+        {% endfor %}
+    {% else %}
+        <p>No history yet.</p>
+    {% endif %}
+</body>
+</html>

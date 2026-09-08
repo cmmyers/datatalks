@@ -7,6 +7,7 @@ from django.db import IntegrityError
 from django.db.models import ProtectedError
 from django.http import HttpResponse
 from django.test import Client, RequestFactory, TestCase
+from django.utils import timezone
 
 from chores.identity import get_current_user, require_identity, set_current_user
 from chores.models import Chore, Household, HouseholdMember, User, WeeklyCompletion
@@ -1473,3 +1474,152 @@ class WeeklyRolloverTests(TestCase):
         self.assertEqual(completion.points_awarded, 7)
         self.assertEqual(completion.week_start_date, week_start)
         self.assertTrue(WeeklyCompletion.objects.filter(pk=completion.pk).exists())
+
+
+class HistoryViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def _make_chore(self, household=None, name="Dishes", points=5):
+        return Chore.objects.create(
+            household=household or self.household, name=name, room="Kitchen", points=points
+        )
+
+    def _complete(
+        self,
+        user=None,
+        household=None,
+        chore=None,
+        points=5,
+        week_start_date=None,
+        completed_at=None,
+    ):
+        household = household or self.household
+        user = user or self.user
+        chore = chore or self._make_chore(household=household, points=points)
+        kwargs = {
+            "chore": chore,
+            "household": household,
+            "user": user,
+            "points_awarded": points,
+            "week_start_date": week_start_date or current_week_start(),
+        }
+        if completed_at is not None:
+            kwargs["completed_at"] = completed_at
+        return WeeklyCompletion.objects.create(**kwargs)
+
+    def test_completion_in_active_household_appears_with_details(self):
+        chore = self._make_chore(name="Dishes", points=5)
+        completion = self._complete(chore=chore, points=5)
+
+        response = self.client.get("/history/")
+
+        self.assertEqual(response.status_code, 200)
+        weeks = response.context["weeks"]
+        self.assertEqual(len(weeks), 1)
+        rendered_completions = weeks[0]["completions"]
+        self.assertEqual(len(rendered_completions), 1)
+        rendered = rendered_completions[0]
+        self.assertEqual(rendered.user.name, "Alex")
+        self.assertEqual(rendered.chore.name, "Dishes")
+        self.assertEqual(rendered.points_awarded, 5)
+        self.assertEqual(rendered.completed_at, completion.completed_at)
+
+    def test_completion_from_different_household_excluded_even_with_same_name(self):
+        same_name_user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=same_name_user, household=self.other_household)
+        self._complete(user=same_name_user, household=self.other_household, points=10)
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        self.assertEqual(weeks, [])
+
+    def test_two_weeks_render_as_separate_groups_with_correct_totals(self):
+        older_week = current_week_start() - datetime.timedelta(days=7)
+        self._complete(points=5, week_start_date=older_week)
+        self._complete(points=3, week_start_date=older_week)
+        self._complete(points=7, week_start_date=current_week_start())
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        self.assertEqual(len(weeks), 2)
+
+        current_group = weeks[0]
+        older_group = weeks[1]
+
+        self.assertEqual(current_group["week_start_date"], current_week_start())
+        self.assertEqual(len(current_group["completions"]), 1)
+        self.assertEqual(current_group["total"], 7)
+
+        self.assertEqual(older_group["week_start_date"], older_week)
+        self.assertEqual(len(older_group["completions"]), 2)
+        self.assertEqual(older_group["total"], 8)
+
+    def test_week_groups_ordered_most_recent_first(self):
+        oldest_week = current_week_start() - datetime.timedelta(days=14)
+        middle_week = current_week_start() - datetime.timedelta(days=7)
+        newest_week = current_week_start()
+
+        self._complete(points=1, week_start_date=middle_week)
+        self._complete(points=1, week_start_date=oldest_week)
+        self._complete(points=1, week_start_date=newest_week)
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        week_starts = [week["week_start_date"] for week in weeks]
+        self.assertEqual(week_starts, [newest_week, middle_week, oldest_week])
+
+    def test_completions_within_week_ordered_by_completed_at_then_id_descending(self):
+        same_timestamp = timezone.now()
+        first = self._complete(points=1, completed_at=same_timestamp)
+        second = self._complete(points=2, completed_at=same_timestamp)
+        third = self._complete(points=3, completed_at=same_timestamp - datetime.timedelta(minutes=5))
+
+        response = self.client.get("/history/")
+        weeks = response.context["weeks"]
+        self.assertEqual(len(weeks), 1)
+        ordered_ids = [c.id for c in weeks[0]["completions"]]
+        # second and first share completed_at, so id descending breaks the
+        # tie (second was created after first, so has the higher id); third
+        # has an earlier completed_at, so it sorts last.
+        self.assertEqual(ordered_ids, [second.id, first.id, third.id])
+
+        response_again = self.client.get("/history/")
+        ordered_ids_again = [c.id for c in response_again.context["weeks"][0]["completions"]]
+        self.assertEqual(ordered_ids_again, ordered_ids)
+
+    def test_current_week_in_progress_completion_appears_alongside_older_weeks(self):
+        older_week = current_week_start() - datetime.timedelta(days=7)
+        self._complete(points=4, week_start_date=older_week)
+        self._complete(points=6, week_start_date=current_week_start())
+
+        response = self.client.get("/history/")
+
+        weeks = response.context["weeks"]
+        week_starts = [week["week_start_date"] for week in weeks]
+        self.assertIn(current_week_start(), week_starts)
+        self.assertEqual(week_starts, [current_week_start(), older_week])
+
+    def test_household_with_no_completions_renders_200_with_empty_weeks(self):
+        response = self.client.get("/history/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["weeks"], [])
+
+    def test_no_active_identity_redirects_to_identity(self):
+        fresh_client = Client()
+        response = fresh_client.get("/history/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")

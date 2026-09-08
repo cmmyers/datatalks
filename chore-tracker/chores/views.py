@@ -1,3 +1,5 @@
+import itertools
+
 from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.http import HttpResponse, JsonResponse
@@ -307,6 +309,45 @@ def points_board(request):
     )
 
     return render(request, "chores/points_board.html", {"board": board})
+
+
+@require_identity
+def history(request):
+    # Read-only log of a household's completed chores, grouped by week, most
+    # recent week first. Wrapped in the task 4 identity guard, so a session
+    # with no active identity redirects to /identity/ instead of rendering
+    # here. Resolves the active household the same way chore_pool/points_board
+    # do. Every week with at least one completion is shown, including the
+    # week-in-progress (current_week_start()) — nothing distinguishes a
+    # "past" week from the current one in the data model, so this view must
+    # not filter it out.
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    completions = (
+        WeeklyCompletion.objects.filter(household=household)
+        .select_related("user", "chore")
+        .order_by("-week_start_date", "-completed_at", "-id")
+    )
+
+    # completions is already ordered by week_start_date descending (and, within
+    # a week, completed_at/id descending), so groupby's "consecutive runs
+    # share a key" behavior groups it correctly without a second query or an
+    # extra sort. Each group's total is computed from these same fetched
+    # rows, not a second query.
+    weeks = []
+    for week_start_date, group in itertools.groupby(completions, key=lambda c: c.week_start_date):
+        week_completions = list(group)
+        weeks.append(
+            {
+                "week_start_date": week_start_date,
+                "completions": week_completions,
+                "total": sum(c.points_awarded for c in week_completions),
+            }
+        )
+
+    return render(request, "chores/history.html", {"weeks": weeks})
 
 
 def _create_household_with_retry(name):
