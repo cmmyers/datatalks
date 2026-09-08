@@ -320,6 +320,62 @@ class ChooseIdentityViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class ChooseIdentityBackToSwitcherLinkTests(TestCase):
+    # Task 24: a link back to /switch/ on /identity/, shown only when the
+    # session already has an active identity (reached via task 20's new
+    # switcher -> /identity/ link). A session with no active identity at all
+    # (the normal, unguarded arrival here) must not see it, since /switch/
+    # is itself guarded and would just bounce back to /identity/.
+    def test_no_active_identity_does_not_include_link(self):
+        response = self.client.get("/identity/")
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertNotIn('id="back-to-switcher-link"', content)
+
+    def test_active_identity_get_includes_link_targeting_switch(self):
+        household = Household.objects.create(name="Smith House")
+        user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=user, household=household)
+
+        session = self.client.session
+        session["user_id"] = user.id
+        session.save()
+
+        response = self.client.get("/identity/")
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        link_match = re.search(r'<a id="back-to-switcher-link"[^>]*>', content)
+        self.assertIsNotNone(
+            link_match, 'expected an <a id="back-to-switcher-link"> element'
+        )
+        self.assertIn('href="/switch/"', link_match.group(0))
+
+    def test_active_identity_failed_post_redisplay_includes_link(self):
+        household = Household.objects.create(name="Smith House")
+        user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=user, household=household)
+
+        session = self.client.session
+        session["user_id"] = user.id
+        session.save()
+
+        response = self.client.post(
+            "/identity/",
+            {"household_name": "   ", "display_name": "Jamie"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn('class="error"', content)
+        link_match = re.search(r'<a id="back-to-switcher-link"[^>]*>', content)
+        self.assertIsNotNone(
+            link_match, 'expected an <a id="back-to-switcher-link"> element'
+        )
+        self.assertIn('href="/switch/"', link_match.group(0))
+
+
 class CreateHouseholdViewTests(TestCase):
     def test_valid_submission_creates_household_user_and_membership(self):
         response = self.client.post(

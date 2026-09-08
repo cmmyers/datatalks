@@ -36,6 +36,7 @@ def choose_identity(request):
     # view must never be wrapped in the identity guard itself, since it is
     # the guard's own redirect target — wrapping it would create a redirect
     # loop.
+    current_user = get_current_user(request)
     error = None
 
     if request.method == "POST":
@@ -50,7 +51,11 @@ def choose_identity(request):
             if error is None:
                 return redirect("chore_pool")
 
-    return render(request, "chores/choose_identity.html", {"error": error})
+    return render(
+        request,
+        "chores/choose_identity.html",
+        {"error": error, "current_user": current_user},
+    )
 
 
 def _handle_create(request):

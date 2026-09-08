@@ -40,5 +40,11 @@
         </label>
         <button type="submit">Join household</button>
     </form>
+
+    {% if current_user %}
+        <p>
+            <a id="back-to-switcher-link" href="{% url 'switch_identity' %}">Back to switcher</a>
+        </p>
+    {% endif %}
 </body>
 </html>
