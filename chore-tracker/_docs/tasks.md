@@ -610,15 +610,58 @@ criteria and edge cases when their turn comes up.
 
 ---
 
-## 14. Weekly rollover
-Goal: Reset point totals for a new week without losing history or chores.
-Description: Add a way to determine the current week's start date
-consistently (Monday, server local time) so that once a new week begins, the
-points board naturally shows zero until new completions happen this week,
-while past `WeeklyCompletion` rows remain untouched for history. Unclaimed
-or claimed-but-incomplete chores simply stay as-is in the pool (no deletion
-or "missed" marking). Test the week-boundary calculation across a
-Sunday-to-Monday transition.
+## 14. Weekly rollover — Completed 2026-09-07 17:55 PDT
+Goal: Confirm the weekly reset is already fully correct and needs no new
+production code, and close the one remaining gap: proving that crossing a
+week boundary never mutates existing `Chore` state or `WeeklyCompletion`
+history.
+Description: Task 12 already built `current_week_start()` (`chores/weeks.py`)
+and tested it across the Sunday-to-Monday boundary
+(`CurrentWeekStartTests.test_straddles_sunday_to_monday_boundary`), and task
+13's points board already sums `WeeklyCompletion.points_awarded` filtered to
+`week_start_date == current_week_start()`, with tests proving a completion
+from a previous week (`test_completion_from_previous_week_excluded`) or a
+future week (`test_completion_from_future_week_excluded`) is excluded from
+the current total, and a member with zero completions this week still shows
+a `0` (`test_member_with_no_completions_appears_with_zero_total`). Taken
+together, these already prove the points board "naturally shows zero" once a
+new week begins — no batch job, cron, or management command computes or
+mutates a weekly reset anywhere in this codebase (there is none), and none is
+being added here: the reset is a pure side effect of `week_start_date`-scoped
+queries run at read time. Likewise, nothing in the codebase touches a
+`Chore`'s `status`/`claimed_by` on a schedule or in response to the current
+date — only the claim/release/complete actions (tasks 10-12) ever change
+those fields — so unclaimed and claimed-but-incomplete chores already stay
+exactly as they are across a week boundary, by the simple fact that no code
+path exists that would do otherwise.
+
+What's not yet pinned down by an explicit test is that invariant itself:
+that simulating a week boundary crossing leaves existing `Chore` rows and
+`WeeklyCompletion` rows completely unchanged, and that hitting the read-only
+points board view (task 13) across that boundary has no side effects. This
+task adds no production code — only tests that lock in the current, correct
+behavior so a future regression (e.g., someone later adding a scheduled task
+that clears the chore pool or archives old completions) would be caught.
+
+Include tests asserting: a `Chore` left `claimed` (with a `claimed_by` set)
+before a simulated week boundary retains the exact same `status` and
+`claimed_by` after the boundary is crossed (patch
+`chores.weeks.timezone.localdate`, as `CurrentWeekStartTests` already does,
+to move `current_week_start()` into a new week, then re-fetch the `Chore`
+from the DB and compare to its pre-boundary values) — no rollover step is
+invoked, because none exists; the same holds for a `Chore` left `open`; a
+`WeeklyCompletion` row created in the prior week is still present with every
+field (`points_awarded`, `week_start_date`, `chore`, `user`, `household`,
+`completed_at`) unchanged after the boundary is crossed, confirmed by
+re-fetching it from the DB; `WeeklyCompletion.objects.count()` is unchanged
+before and after a GET to `/points/` (task 13) that spans a simulated week
+boundary, confirming the read-only board view has no write side effects; and
+after the boundary is crossed, that same prior-week completion contributes
+`0` to the new current week's total on `/points/` while still being fully
+present in the database (re-asserting
+`test_completion_from_previous_week_excluded`'s exclusion, but this time
+paired with a DB check that the row survived unmodified, closing the gap
+that test alone doesn't check for).
 
 ## 15. History view
 Goal: Show past weeks' totals and/or a log of completed chores.
