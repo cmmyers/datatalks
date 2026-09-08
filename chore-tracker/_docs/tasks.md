@@ -802,20 +802,70 @@ to either `/settings/` or `/chores/<id>/edit/` with no active session
 identity redirects to `/identity/` rather than rendering or processing the
 form.
 
+## 17. Household settings — join code and member list — Completed 2026-09-07 18:50 PDT
+Goal: Let members view the household's join code and see who's currently in
+it, extending the same `/settings/` page task 16 built rather than
+introducing a new page.
+Description: Extend the existing `household_settings` view
+(`chores/views.py`) and its template
+(`chores/templates/chores/household_settings.html`), both already wrapped in
+the task 4 `require_identity` guard and already resolving the active
+household via the current user's `HouseholdMember` row (same lookup as tasks
+8, 10-13, 15, 16) — do not add a new URL/view for this, mirroring how tasks
+5/6 both extend `choose_identity` rather than introduce competing pages.
+
+Add two read-only sections to the GET-rendered page, alongside the existing
+chores list and add-chore form (unchanged by this task): the active
+household's `join_code` (rendered as plain text, e.g.
+`{{ household.join_code }}`), and a list of the household's current
+members — every `HouseholdMember` row scoped to the active household,
+showing each member's `User.name`. Order the member list deterministically:
+ascending alphabetically by name, case-insensitively (mirroring task 13's
+points-board ordering, e.g.
+`HouseholdMember.objects.filter(household=household).select_related("user").order_by(Lower("user__name"))`
+or equivalent) — `User.name` is already unique within a household
+case-insensitively (task 2), so no further tiebreaker is needed. Both
+sections must be scoped to the active household only: a different
+household's `join_code` or member rows must never appear, even if that other
+household's `join_code` or a member's name happens to look similar to the
+active household's.
+
+Add a copy-to-clipboard control (e.g. a button using the browser clipboard
+API) next to the displayed join code, as a frontend/JS affordance — this is
+a UI nicety with no server-observable behavior, so it is not something a
+Django test client can meaningfully assert on. Scope the testable acceptance
+criteria below to what the server actually renders (the join code text and
+member names present in the response), not the copy button's JS behavior,
+which is a manual/visual check only.
+
+This task changes only the GET rendering path of `household_settings` — the
+existing POST handling (add-chore form, task 16) and the `chore_edit` view
+are unchanged.
+
+Include tests asserting: GET `/settings/` for a signed-in session includes
+the active household's `join_code` text in the rendered response; GET
+`/settings/` includes the display name of every current member of the
+active household (every `HouseholdMember` row for that household) in the
+rendered response; a `join_code` belonging to a *different* household does
+not appear anywhere in the response; a member's name belonging to a
+*different* household does not appear in the response (household isolation,
+mirroring tasks 8/13/15); the member list renders in ascending alphabetical
+order case-insensitively (e.g. a member named "bob" and a member named
+"Alice" in the same household render with "Alice" appearing before "bob");
+the existing add-chore form and chore list from task 16 still render and
+function unchanged (submitting a valid add-chore form still creates exactly
+one `Chore`, per task 16's existing test coverage — not a new assertion,
+just confirming this task didn't regress it); and a request to `/settings/`
+with no active session identity redirects to `/identity/` rather than
+rendering.
+
 ---
 
-**Tasks 17 and below have not been groomed yet** — they still reflect the
+**Tasks 18 and below have not been groomed yet** — they still reflect the
 original backlog language and will be reviewed for checkable acceptance
 criteria and edge cases when their turn comes up.
 
 ---
-
-## 17. Household settings — join code and member list
-Goal: Let members view/copy the household's join code and see who's in it.
-Description: Build a read-only settings section showing the household's
-`join_code` (with a copy-to-clipboard affordance) and a list of current
-members. Test that the join code displayed matches the household's stored
-code and the member list matches `HouseholdMember` rows.
 
 ## 18. Base layout and navigation
 Goal: Give the app a consistent shell so all the views feel like one product.
