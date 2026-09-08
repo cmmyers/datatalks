@@ -2208,7 +2208,9 @@ class ChoreEditViewTests(TestCase):
         self.assertEqual(chore.name, "Dishes")
 
 
-NAV_URLS = ["/chores/", "/points/", "/history/", "/settings/", "/switch/"]
+# Task 23 extended this from five links to six by adding /chores/mine/
+# (task 21's "my claimed chores" view) once it existed.
+NAV_URLS = ["/chores/", "/chores/mine/", "/points/", "/history/", "/settings/", "/switch/"]
 
 
 class BaseLayoutNavigationTests(TestCase):
