@@ -171,6 +171,29 @@ def chore_pool(request):
 
 
 @require_identity
+def my_claimed_chores(request):
+    # Read-only view of chores the current session's active identity has
+    # personally claimed but not yet completed, scoped to the active
+    # household. Wrapped in the task 4 identity guard, so a session with no
+    # active identity redirects to /identity/ instead of rendering here.
+    # Resolves the active household the same way chore_pool/points_board/
+    # history/household_settings do. Unlike task 8's chore pool (status
+    # open, any claimant), this filters on both status=claimed and
+    # claimed_by=current_user, so a chore claimed by a different member of
+    # the same household is excluded, not just chores from another
+    # household or another of this session's identities.
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    chores = Chore.objects.filter(
+        household=household, status=Chore.STATUS_CLAIMED, claimed_by=current_user
+    ).order_by("name", "id")
+
+    return render(request, "chores/my_claimed_chores.html", {"chores": chores})
+
+
+@require_identity
 def claim_chore(request, chore_id):
     # Action endpoint: claim an open chore for the current session's active
     # identity. Wrapped in the task 4 identity guard, so a session with no

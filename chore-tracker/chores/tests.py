@@ -2463,3 +2463,130 @@ class SwitcherAddHouseholdLinkTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/identity/")
+
+
+class MyClaimedChoresViewTests(TestCase):
+    # Task 21: read-only "chores I've claimed" list, scoped to both the
+    # active household and the current session identity specifically (not
+    # just anyone in the household).
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_user = User.objects.create(name="Sam")
+        HouseholdMember.objects.create(user=self.other_user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def test_chore_claimed_by_current_user_appears_in_list(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.get("/chores/mine/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(chore, list(response.context["chores"]))
+
+    def test_chore_claimed_by_different_user_in_same_household_excluded(self):
+        Chore.objects.create(
+            household=self.household,
+            name="Trash",
+            room="Kitchen",
+            points=2,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.other_user,
+        )
+
+        response = self.client.get("/chores/mine/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_chore_claimed_by_other_session_identity_in_different_household_excluded(self):
+        # Task 7's multi-household switching: the same browser session can
+        # act as a different identity in a different household. A chore
+        # claimed there by that other identity must not leak into this
+        # household's "my claimed chores" list.
+        other_household_user = User.objects.create(name="Jamie")
+        HouseholdMember.objects.create(user=other_household_user, household=self.other_household)
+        Chore.objects.create(
+            household=self.other_household,
+            name="Vacuum",
+            room="Living Room",
+            points=4,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=other_household_user,
+        )
+
+        session = self.client.session
+        session["known_user_ids"] = [self.user.id, other_household_user.id]
+        session.save()
+
+        response = self.client.get("/chores/mine/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_open_chore_in_active_household_excluded(self):
+        Chore.objects.create(household=self.household, name="Sweep", room="Kitchen", points=1)
+
+        response = self.client.get("/chores/mine/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_user_with_no_active_claims_renders_200_with_empty_list(self):
+        response = self.client.get("/chores/mine/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_same_named_chores_render_in_deterministic_order_by_id(self):
+        first = Chore.objects.create(
+            household=self.household,
+            name="Sweep",
+            room="Kitchen",
+            points=1,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+        second = Chore.objects.create(
+            household=self.household,
+            name="Sweep",
+            room="Living Room",
+            points=2,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.get("/chores/mine/")
+        self.assertEqual(list(response.context["chores"]), [first, second])
+
+        response_again = self.client.get("/chores/mine/")
+        self.assertEqual(list(response_again.context["chores"]), [first, second])
+
+    def test_get_returns_200_with_nav_links(self):
+        response = self.client.get("/chores/mine/")
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        for url in NAV_URLS:
+            self.assertIn(url, content)
+
+    def test_no_active_identity_redirects_to_identity(self):
+        fresh_client = Client()
+        response = fresh_client.get("/chores/mine/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
