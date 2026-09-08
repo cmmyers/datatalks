@@ -1204,7 +1204,7 @@ and the rendered response contains all six nav link URLs, including
 `/identity/` with no active session identity still does not contain any of
 the six nav link URLs, mirroring task 18's same scoping assertion.
 
-## 24. Add a way back to the switcher from `/identity/` when an identity is already active
+## 24. Add a way back to the switcher from `/identity/` when an identity is already active — Completed 2026-09-08 06:20 PDT
 Goal: Let someone who followed task 20's new link from the switcher to
 `/identity/`, then changed their mind, get back to `/switch/` without
 relying on the browser's back button.
@@ -1215,16 +1215,46 @@ active identity at all, when a nav full of guarded-page links would be dead
 weight for that visitor. Task 20 adds a legitimate path to this same page
 *from* a guarded page (the switcher) for a session that already has an
 active identity, so for that specific case add a link back to `/switch/` on
-`choose_identity.html`, conditioned on `get_current_user(request)` (task 4)
-returning a non-`None` user — shown only when there is an existing identity
-to switch back to; a session with no active identity at all (the normal,
-un-guarded arrival at this page) sees no such link, since there is nothing
-to go back to. This is a template change plus one new boolean/user context
-key passed by the `choose_identity` view (`chores/views.py`, tasks 4-6) on
-GET only — no change to `_handle_create`, `_handle_join`, or
-`switch_identity`, and no change to POST handling.
+`choose_identity.html`, conditioned on whether an identity is already
+active — shown only when there is an existing identity to switch back to; a
+session with no active identity at all (the normal, un-guarded arrival at
+this page) sees no such link, since `/switch/` is itself wrapped in the
+task 4 guard and would just bounce that visitor straight back to
+`/identity/`, a pointless loop.
+
+Mechanism: `choose_identity` (`chores/views.py`, tasks 4-6) currently builds
+its template context as just `{"error": error}` — it never calls
+`get_current_user(request)` (task 4) at all today. Add
+`current_user = get_current_user(request)` near the top of the view (same
+pattern already used in `switch_identity` and every other view in the
+file) and pass it through as a `current_user` context key on the existing
+single `render(request, "chores/choose_identity.html", {...})` call. Do
+**not** gate this on `request.method` — that render call is reached both by
+a plain GET and by a POST that fails `_handle_create`/`_handle_join`
+validation (invalid create/join form submitted by a session that already
+has an active identity, e.g. blank display name), and the same "is an
+identity already active" fact applies in both cases; special-casing GET
+only would make the link disappear on a failed-validation redisplay for no
+reason and isn't something any test pins down, so don't introduce that
+inconsistency. No change to `_handle_create`, `_handle_join`, or
+`switch_identity` — this view keeps setting the session exactly as it does
+today; the only new thing is reading (never writing) `get_current_user`'s
+result into the context. In `choose_identity.html`, wrap a link to
+`/switch/` — built with `{% url 'switch_identity' %}`, never a hardcoded
+path, mirroring task 20 — in `{% if current_user %}`, and give it a stable
+marker (e.g. `id="back-to-switcher-link"`) so tests can assert on it
+precisely rather than scraping surrounding prose, mirroring task 20's
+`id="add-household-link"`.
+
 Include tests asserting: GET `/identity/` with an active identity already
-set includes a link to `/switch/`; GET `/identity/` with no active identity
-set does not include a link to `/switch/`; and the existing create/join
-forms and their behavior (tasks 5/6, including their existing test
-coverage) are unchanged by this addition.
+set includes a link to `/switch/` (assert on the marker, e.g.
+`id="back-to-switcher-link"`, and that its target resolves to `/switch/`);
+GET `/identity/` with no active identity set does not include that link;
+a POST to `/identity/` that fails validation (e.g. `_handle_create` with a
+blank `household_name`, per task 5) from a session with an active identity
+already set redisplays the form (200, with the existing `error` message)
+and still includes the link back to `/switch/`, confirming the context key
+isn't accidentally scoped to GET only; and the existing create/join forms
+and their behavior (tasks 5/6, including their existing test coverage,
+plus task 20's tests covering the switcher-to-identity path) are unchanged
+by this addition.
