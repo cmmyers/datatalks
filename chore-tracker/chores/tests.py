@@ -1623,3 +1623,420 @@ class HistoryViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/identity/")
+
+
+class HouseholdSettingsViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def test_valid_submission_creates_chore_in_active_household(self):
+        response = self.client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/settings/")
+
+        self.assertEqual(Chore.objects.count(), 1)
+        chore = Chore.objects.get()
+        self.assertEqual(chore.household, self.household)
+        self.assertEqual(chore.name, "Dishes")
+        self.assertEqual(chore.room, "Kitchen")
+        self.assertEqual(chore.points, 5)
+        self.assertEqual(chore.status, Chore.STATUS_OPEN)
+        self.assertIsNone(chore.claimed_by)
+
+    def test_submitted_values_are_stripped(self):
+        self.client.post(
+            "/settings/", {"name": "  Dishes  ", "room": "  Kitchen  ", "points": "5"}
+        )
+
+        chore = Chore.objects.get()
+        self.assertEqual(chore.name, "Dishes")
+        self.assertEqual(chore.room, "Kitchen")
+
+    def test_new_chore_appears_in_chore_pool_view(self):
+        self.client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "5"}
+        )
+
+        response = self.client.get("/chores/")
+
+        self.assertEqual(response.status_code, 200)
+        chores = list(response.context["chores"])
+        self.assertEqual(len(chores), 1)
+        self.assertEqual(chores[0].name, "Dishes")
+        self.assertEqual(chores[0].room, "Kitchen")
+        self.assertEqual(chores[0].points, 5)
+
+    def test_blank_name_rerenders_with_error_and_creates_no_chore(self):
+        response = self.client.post(
+            "/settings/", {"name": "   ", "room": "Kitchen", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Chore.objects.count(), 0)
+
+    def test_blank_room_rerenders_with_error_and_creates_no_chore(self):
+        response = self.client.post(
+            "/settings/", {"name": "Dishes", "room": "  ", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Chore.objects.count(), 0)
+
+    def test_non_numeric_points_rerenders_with_error_and_creates_no_chore(self):
+        response = self.client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "abc"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Chore.objects.count(), 0)
+
+    def test_non_integer_numeric_points_rerenders_with_error_and_creates_no_chore(self):
+        response = self.client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "3.5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Chore.objects.count(), 0)
+
+    def test_zero_points_rerenders_with_error_and_creates_no_chore(self):
+        response = self.client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "0"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Chore.objects.count(), 0)
+
+    def test_negative_points_rerenders_with_error_and_creates_no_chore(self):
+        response = self.client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "-5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Chore.objects.count(), 0)
+
+    def test_get_lists_open_and_claimed_chores_in_active_household(self):
+        open_chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+        claimed_chore = Chore.objects.create(
+            household=self.household,
+            name="Trash",
+            room="Kitchen",
+            points=2,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.get("/settings/")
+
+        self.assertEqual(response.status_code, 200)
+        chores = list(response.context["chores"])
+        self.assertIn(open_chore, chores)
+        self.assertIn(claimed_chore, chores)
+
+    def test_get_excludes_chores_from_other_households(self):
+        Chore.objects.create(
+            household=self.other_household, name="Laundry", room="Bathroom", points=3
+        )
+
+        response = self.client.get("/settings/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["chores"]), [])
+
+    def test_get_orders_chores_by_name_then_id(self):
+        second = Chore.objects.create(
+            household=self.household, name="Sweep", room="Living Room", points=2
+        )
+        first = Chore.objects.create(
+            household=self.household, name="Sweep", room="Kitchen", points=1
+        )
+
+        response = self.client.get("/settings/")
+
+        # Both chores share a name, so id ascending breaks the tie
+        # (mirroring task 8's determinism, "second" was created before
+        # "first" here — check by id, not creation order in this test).
+        expected = sorted([second, first], key=lambda c: c.id)
+        self.assertEqual(list(response.context["chores"]), expected)
+
+    def test_no_active_identity_redirects_to_identity_on_get(self):
+        fresh_client = Client()
+        response = fresh_client.get("/settings/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+    def test_no_active_identity_redirects_to_identity_on_post(self):
+        fresh_client = Client()
+        response = fresh_client.post(
+            "/settings/", {"name": "Dishes", "room": "Kitchen", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+        self.assertEqual(Chore.objects.count(), 0)
+
+
+class ChoreEditViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def _edit_url(self, chore_id):
+        return f"/chores/{chore_id}/edit/"
+
+    def test_get_returns_200_with_prefilled_form(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.get(self._edit_url(chore.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["chore"], chore)
+        self.assertContains(response, "Dishes")
+        self.assertContains(response, "Kitchen")
+
+    def test_valid_edit_updates_chore_and_redirects(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id),
+            {"name": "Wash dishes", "room": "Scullery", "points": "8"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/settings/")
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.name, "Wash dishes")
+        self.assertEqual(chore.room, "Scullery")
+        self.assertEqual(chore.points, 8)
+
+    def test_edit_values_are_stripped(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        self.client.post(
+            self._edit_url(chore.id),
+            {"name": "  Wash dishes  ", "room": "  Scullery  ", "points": "8"},
+        )
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.name, "Wash dishes")
+        self.assertEqual(chore.room, "Scullery")
+
+    def test_blank_name_rerenders_with_error_and_leaves_chore_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id), {"name": "  ", "room": "Kitchen", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        chore.refresh_from_db()
+        self.assertEqual(chore.name, "Dishes")
+        self.assertEqual(chore.room, "Kitchen")
+        self.assertEqual(chore.points, 5)
+
+    def test_blank_room_rerenders_with_error_and_leaves_chore_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id), {"name": "Dishes", "room": "  ", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        chore.refresh_from_db()
+        self.assertEqual(chore.name, "Dishes")
+        self.assertEqual(chore.room, "Kitchen")
+        self.assertEqual(chore.points, 5)
+
+    def test_non_numeric_points_rerenders_with_error_and_leaves_chore_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id), {"name": "Dishes", "room": "Kitchen", "points": "abc"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        chore.refresh_from_db()
+        self.assertEqual(chore.points, 5)
+
+    def test_non_integer_numeric_points_rerenders_with_error_and_leaves_chore_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id), {"name": "Dishes", "room": "Kitchen", "points": "3.5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        chore.refresh_from_db()
+        self.assertEqual(chore.points, 5)
+
+    def test_zero_points_rerenders_with_error_and_leaves_chore_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id), {"name": "Dishes", "room": "Kitchen", "points": "0"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        chore.refresh_from_db()
+        self.assertEqual(chore.points, 5)
+
+    def test_negative_points_rerenders_with_error_and_leaves_chore_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id), {"name": "Dishes", "room": "Kitchen", "points": "-5"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        chore.refresh_from_db()
+        self.assertEqual(chore.points, 5)
+
+    def test_editing_claimed_chore_leaves_status_and_claimed_by_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id),
+            {"name": "Wash dishes", "room": "Scullery", "points": "8"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        chore.refresh_from_db()
+        self.assertEqual(chore.name, "Wash dishes")
+        self.assertEqual(chore.room, "Scullery")
+        self.assertEqual(chore.points, 8)
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+        self.assertEqual(chore.claimed_by, self.user)
+
+    def test_editing_points_after_completion_leaves_points_awarded_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+        completion = WeeklyCompletion.objects.create(
+            chore=chore,
+            household=self.household,
+            user=self.user,
+            points_awarded=5,
+            week_start_date=current_week_start(),
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id),
+            {"name": "Dishes", "room": "Kitchen", "points": "99"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        chore.refresh_from_db()
+        self.assertEqual(chore.points, 99)
+
+        completion.refresh_from_db()
+        self.assertEqual(completion.points_awarded, 5)
+
+    def test_get_for_chore_in_different_household_returns_404(self):
+        chore = Chore.objects.create(
+            household=self.other_household, name="Laundry", room="Bathroom", points=3
+        )
+
+        response = self.client.get(self._edit_url(chore.id))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_post_for_chore_in_different_household_returns_404_and_leaves_it_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.other_household, name="Laundry", room="Bathroom", points=3
+        )
+
+        response = self.client.post(
+            self._edit_url(chore.id),
+            {"name": "Hijacked", "room": "Nowhere", "points": "1"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        chore.refresh_from_db()
+        self.assertEqual(chore.name, "Laundry")
+        self.assertEqual(chore.room, "Bathroom")
+        self.assertEqual(chore.points, 3)
+
+    def test_get_for_nonexistent_chore_returns_404(self):
+        response = self.client.get(self._edit_url(99999))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_post_for_nonexistent_chore_returns_404(self):
+        response = self.client.post(
+            self._edit_url(99999), {"name": "Dishes", "room": "Kitchen", "points": "5"}
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_no_active_identity_redirects_to_identity_on_get(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        fresh_client = Client()
+        response = fresh_client.get(self._edit_url(chore.id))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+    def test_no_active_identity_redirects_to_identity_on_post(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        fresh_client = Client()
+        response = fresh_client.post(
+            self._edit_url(chore.id),
+            {"name": "Wash dishes", "room": "Scullery", "points": "8"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+        chore.refresh_from_db()
+        self.assertEqual(chore.name, "Dishes")

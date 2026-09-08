@@ -350,6 +350,106 @@ def history(request):
     return render(request, "chores/history.html", {"weeks": weeks})
 
 
+def _parse_chore_form(post_data):
+    """Validate and parse the add/edit chore form (task 16).
+
+    Returns (name, room, points, error). On invalid input, name/room/points
+    are all None and error is a user-facing message; on valid input, error
+    is None. Validates before ever touching the model layer — Chore.save()
+    calls full_clean() (task 3), so handing it bad data directly would
+    surface as an unhandled ValidationError rather than a friendly
+    re-rendered form.
+    """
+    name = post_data.get("name", "").strip()
+    room = post_data.get("room", "").strip()
+    raw_points = post_data.get("points", "")
+
+    if not name or not room:
+        return None, None, None, "Name and room are both required."
+
+    try:
+        # int() rejects non-numeric strings (e.g. "abc") and non-integer
+        # numeric strings (e.g. "3.5") alike, matching the task's
+        # requirement that both count as invalid input.
+        points = int(raw_points)
+    except (TypeError, ValueError):
+        return None, None, None, "Points must be a whole number."
+
+    if points <= 0:
+        return None, None, None, "Points must be a positive number."
+
+    return name, room, points, None
+
+
+@require_identity
+def household_settings(request):
+    # Lets members add new chores to the active household's pool and see
+    # every existing chore (any status) with a link to edit it. Wrapped in
+    # the task 4 identity guard, so a session with no active identity
+    # redirects to /identity/ instead of rendering or processing the form.
+    # Resolves the active household the same way chore_pool/points_board/
+    # history do. Follows the choose_identity form-handling pattern (tasks
+    # 5/6): GET renders, POST processes, a rejected submission re-renders
+    # with an error and creates no row rather than raising a server error.
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    error = None
+
+    if request.method == "POST":
+        name, room, points, error = _parse_chore_form(request.POST)
+        if error is None:
+            # status/claimed_by take their model defaults (open/unset) — a
+            # chore created here is never pre-claimed.
+            Chore.objects.create(household=household, name=name, room=room, points=points)
+            return redirect("household_settings")
+
+    # Unlike task 8's chore pool, this page manages the whole pool, so a
+    # claimed chore must still show up here to be editable — no status
+    # filter, only the household scope. Same deterministic ordering as
+    # task 8.
+    chores = Chore.objects.filter(household=household).order_by("name", "id")
+
+    return render(
+        request, "chores/household_settings.html", {"chores": chores, "error": error}
+    )
+
+
+@require_identity
+def chore_edit(request, chore_id):
+    # Lets a member edit an existing chore's name/room/points. Wrapped in
+    # the task 4 identity guard, so a session with no active identity
+    # redirects to /identity/ instead of rendering or processing the form.
+    current_user = get_current_user(request)
+    membership = HouseholdMember.objects.get(user=current_user)
+    household = membership.household
+
+    # Household filter is part of the query itself, not a Python check
+    # applied after fetching by id, so isolation holds structurally on both
+    # GET and POST: a chore id belonging to a different household is
+    # indistinguishable from a nonexistent one (404) either way.
+    chore = get_object_or_404(Chore, id=chore_id, household=household)
+
+    error = None
+
+    if request.method == "POST":
+        name, room, points, error = _parse_chore_form(request.POST)
+        if error is None:
+            # Only name/room/points are touched — status/claimed_by are
+            # owned exclusively by the claim/release/complete actions
+            # (tasks 10-12), and any WeeklyCompletion.points_awarded rows
+            # already recorded against this chore keep their own stored
+            # value (task 3) regardless of this edit.
+            chore.name = name
+            chore.room = room
+            chore.points = points
+            chore.save()
+            return redirect("household_settings")
+
+    return render(request, "chores/chore_edit.html", {"chore": chore, "error": error})
+
+
 def _create_household_with_retry(name):
     """Create a Household, regenerating join_code on a collision.
 

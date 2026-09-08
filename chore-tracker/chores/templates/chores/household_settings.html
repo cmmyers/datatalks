@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Household settings</title>
+</head>
+<body>
+    <h1>Household settings</h1>
+
+    <h2>Chores</h2>
+
+    {% if chores %}
+        <ul>
+            {% for chore in chores %}
+                <li>
+                    {{ chore.name }} - {{ chore.room }} - {{ chore.points }} points
+                    ({{ chore.status }})
+                    <a href="{% url 'chore_edit' chore.id %}">Edit</a>
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>No chores yet.</p>
+    {% endif %}
+
+    <h2>Add a chore</h2>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form method="post" action="{% url 'household_settings' %}">
+        {% csrf_token %}
+        <label>
+            Name
+            <input type="text" name="name">
+        </label>
+        <label>
+            Room
+            <input type="text" name="room">
+        </label>
+        <label>
+            Points
+            <input type="text" name="points">
+        </label>
+        <button type="submit">Add chore</button>
+    </form>
+</body>
+</html>
