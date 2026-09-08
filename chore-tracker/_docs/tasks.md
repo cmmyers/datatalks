@@ -492,7 +492,7 @@ so household isolation holds against a guessed/crafted id; a nonexistent
 chore id likewise returns 404.
 
 This task needs a way to compute "the current Monday-start week" before
-task 13 formally builds one, since a `WeeklyCompletion` row can't be written
+task 14 formally builds one, since a `WeeklyCompletion` row can't be written
 without a `week_start_date`. Add a small helper now (e.g. a
 `current_week_start()` function in a new `chores/weeks.py`, using
 `django.utils.timezone.localdate()` per the spec's "server local time" rule)

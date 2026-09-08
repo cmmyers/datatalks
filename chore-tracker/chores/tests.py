@@ -10,6 +10,7 @@ from django.test import Client, RequestFactory, TestCase
 
 from chores.identity import get_current_user, require_identity, set_current_user
 from chores.models import Chore, Household, HouseholdMember, User, WeeklyCompletion
+from chores.weeks import current_week_start
 
 
 class HealthViewTests(TestCase):
@@ -1006,5 +1007,196 @@ class ReleaseChoreViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/identity/")
 
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+
+
+class CurrentWeekStartTests(TestCase):
+    def test_returns_same_monday_for_every_day_monday_through_sunday(self):
+        # Monday 2026-09-07 through Sunday 2026-09-13.
+        monday = datetime.date(2026, 9, 7)
+        days_in_week = [monday + datetime.timedelta(days=offset) for offset in range(7)]
+
+        for day in days_in_week:
+            with patch("chores.weeks.timezone.localdate", return_value=day):
+                self.assertEqual(current_week_start(), monday)
+
+    def test_straddles_sunday_to_monday_boundary(self):
+        previous_sunday = datetime.date(2026, 9, 6)
+        previous_monday = datetime.date(2026, 8, 31)
+        next_monday = datetime.date(2026, 9, 7)
+
+        with patch("chores.weeks.timezone.localdate", return_value=previous_sunday):
+            self.assertEqual(current_week_start(), previous_monday)
+
+        with patch("chores.weeks.timezone.localdate", return_value=next_monday):
+            self.assertEqual(current_week_start(), next_monday)
+
+
+class CompleteChoreViewTests(TestCase):
+    def setUp(self):
+        self.household = Household.objects.create(name="Smith House")
+        self.user = User.objects.create(name="Alex")
+        HouseholdMember.objects.create(user=self.user, household=self.household)
+
+        self.other_user = User.objects.create(name="Jamie")
+        HouseholdMember.objects.create(user=self.other_user, household=self.household)
+
+        self.other_household = Household.objects.create(name="Jones House")
+
+        session = self.client.session
+        session["user_id"] = self.user.id
+        session.save()
+
+    def _complete_url(self, chore_id):
+        return f"/chores/{chore_id}/complete/"
+
+    def test_completing_own_claim_awards_points_and_resets_chore(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.post(self._complete_url(chore.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "completed", "points_awarded": 5})
+
+        self.assertEqual(WeeklyCompletion.objects.count(), 1)
+        completion = WeeklyCompletion.objects.get()
+        self.assertEqual(completion.chore, chore)
+        self.assertEqual(completion.household, self.household)
+        self.assertEqual(completion.user, self.user)
+        self.assertEqual(completion.points_awarded, 5)
+        self.assertEqual(completion.week_start_date, current_week_start())
+
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_OPEN)
+        self.assertIsNone(chore.claimed_by)
+        self.assertEqual(chore.name, "Dishes")
+        self.assertEqual(chore.room, "Kitchen")
+        self.assertEqual(chore.points, 5)
+
+    def test_completing_chore_claimed_by_different_user_is_rejected(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.other_user,
+        )
+
+        response = self.client.post(self._complete_url(chore.id))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("error", response.json())
+
+        self.assertEqual(WeeklyCompletion.objects.count(), 0)
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+        self.assertEqual(chore.claimed_by, self.other_user)
+
+    def test_completing_already_open_chore_is_rejected(self):
+        chore = Chore.objects.create(
+            household=self.household, name="Dishes", room="Kitchen", points=5
+        )
+
+        response = self.client.post(self._complete_url(chore.id))
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("error", response.json())
+
+        self.assertEqual(WeeklyCompletion.objects.count(), 0)
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_OPEN)
+        self.assertIsNone(chore.claimed_by)
+
+    def test_completing_chore_in_different_household_returns_404(self):
+        chore = Chore.objects.create(
+            household=self.other_household,
+            name="Laundry",
+            room="Bathroom",
+            points=3,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.post(self._complete_url(chore.id))
+
+        self.assertEqual(response.status_code, 404)
+
+        self.assertEqual(WeeklyCompletion.objects.count(), 0)
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+        self.assertEqual(chore.claimed_by, self.user)
+
+    def test_completing_nonexistent_chore_returns_404(self):
+        response = self.client.post(self._complete_url(99999))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(WeeklyCompletion.objects.count(), 0)
+
+    def test_editing_points_after_completion_leaves_points_awarded_unchanged(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.post(self._complete_url(chore.id))
+        self.assertEqual(response.status_code, 200)
+
+        completion = WeeklyCompletion.objects.get()
+        self.assertEqual(completion.points_awarded, 5)
+
+        chore.points = 99
+        chore.save()
+
+        completion.refresh_from_db()
+        self.assertEqual(completion.points_awarded, 5)
+
+    def test_get_request_does_not_complete_and_returns_405(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        response = self.client.get(self._complete_url(chore.id))
+
+        self.assertEqual(response.status_code, 405)
+
+        self.assertEqual(WeeklyCompletion.objects.count(), 0)
+        chore.refresh_from_db()
+        self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
+
+    def test_no_active_identity_redirects_to_identity(self):
+        chore = Chore.objects.create(
+            household=self.household,
+            name="Dishes",
+            room="Kitchen",
+            points=5,
+            status=Chore.STATUS_CLAIMED,
+            claimed_by=self.user,
+        )
+
+        fresh_client = Client()
+        response = fresh_client.post(self._complete_url(chore.id))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "/identity/")
+
+        self.assertEqual(WeeklyCompletion.objects.count(), 0)
         chore.refresh_from_db()
         self.assertEqual(chore.status, Chore.STATUS_CLAIMED)
