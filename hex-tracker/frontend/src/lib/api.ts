@@ -50,6 +50,13 @@ export function getBoard(boardId: string): Promise<Board> {
   return request<Board>(`/boards/${boardId}`);
 }
 
+export function updateBoard(boardId: string, input: { name: string }): Promise<Board> {
+  return request<Board>(`/boards/${boardId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export function createCard(
   boardId: string,
   input: { column_id: ColumnId; title: string; description?: string },

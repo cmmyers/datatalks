@@ -29,3 +29,27 @@ def test_get_board_404_for_unknown_id(client):
 
     assert response.status_code == 404
     assert "detail" in response.json()
+
+
+def test_rename_board(client):
+    board_id = client.post("/boards", json={"name": "Old name"}).json()["id"]
+
+    response = client.patch(f"/boards/{board_id}", json={"name": "New name"})
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "New name"
+    assert client.get(f"/boards/{board_id}").json()["name"] == "New name"
+
+
+def test_rename_board_requires_non_empty_name(client):
+    board_id = client.post("/boards", json={}).json()["id"]
+
+    response = client.patch(f"/boards/{board_id}", json={"name": ""})
+
+    assert response.status_code == 422
+
+
+def test_rename_board_404_for_unknown_id(client):
+    response = client.patch("/boards/does-not-exist", json={"name": "New name"})
+
+    assert response.status_code == 404

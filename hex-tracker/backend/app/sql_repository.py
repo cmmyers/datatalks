@@ -46,6 +46,16 @@ class SqlBoardRepository(BoardRepository):
                 raise BoardNotFoundError(board_id)
             return self._to_board(row)
 
+    def update_board(self, board_id: str, *, name: str) -> Board:
+        with self._session_factory() as session:
+            row = session.get(BoardRow, board_id)
+            if row is None:
+                raise BoardNotFoundError(board_id)
+            row.name = name
+            session.commit()
+            session.refresh(row)
+            return self._to_board(row)
+
     def create_card(
         self, board_id: str, column_id: ColumnId, title: str, description: str
     ) -> Card:

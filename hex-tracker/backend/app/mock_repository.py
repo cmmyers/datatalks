@@ -51,6 +51,11 @@ class InMemoryBoardRepository(BoardRepository):
     def get_board(self, board_id: str) -> Board:
         return self._to_board(self._require_board(board_id))
 
+    def update_board(self, board_id: str, *, name: str) -> Board:
+        record = self._require_board(board_id)
+        record.name = name
+        return self._to_board(record)
+
     def create_card(
         self, board_id: str, column_id: ColumnId, title: str, description: str
     ) -> Card:

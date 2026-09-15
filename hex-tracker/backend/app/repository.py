@@ -26,6 +26,9 @@ class BoardRepository(ABC):
     def get_board(self, board_id: str) -> Board: ...
 
     @abstractmethod
+    def update_board(self, board_id: str, *, name: str) -> Board: ...
+
+    @abstractmethod
     def create_card(
         self, board_id: str, column_id: ColumnId, title: str, description: str
     ) -> Card: ...

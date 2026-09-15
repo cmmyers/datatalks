@@ -36,6 +36,10 @@ class CreateBoardRequest(BaseModel):
     name: str | None = None
 
 
+class UpdateBoardRequest(BaseModel):
+    name: str = Field(min_length=1)
+
+
 class CreateCardRequest(BaseModel):
     column_id: ColumnId
     title: str = Field(min_length=1)

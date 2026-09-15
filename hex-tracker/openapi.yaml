@@ -74,6 +74,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateBoard
+      summary: Rename a board
+      description: No authentication required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBoardRequest"
+      responses:
+        "200":
+          description: Updated board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Board"
+        "404":
+          description: No board exists with this id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation error (e.g. empty name).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /boards/{board_id}/cards:
     parameters:
@@ -235,6 +264,14 @@ components:
         name:
           type: string
           description: Defaults to "Untitled board" if omitted.
+
+    UpdateBoardRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
 
     CreateCardRequest:
       type: object

@@ -1,7 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..dependencies import get_repository
-from ..models import Board, Card, CreateBoardRequest, CreateCardRequest, UpdateCardRequest
+from ..models import (
+    Board,
+    Card,
+    CreateBoardRequest,
+    CreateCardRequest,
+    UpdateBoardRequest,
+    UpdateCardRequest,
+)
 from ..repository import BoardNotFoundError, BoardRepository, CardNotFoundError
 
 router = APIRouter(prefix="/boards", tags=["boards"])
@@ -18,6 +25,18 @@ def create_board(
 def get_board(board_id: str, repository: BoardRepository = Depends(get_repository)) -> Board:
     try:
         return repository.get_board(board_id)
+    except BoardNotFoundError:
+        raise HTTPException(status_code=404, detail=f"No board exists with id '{board_id}'")
+
+
+@router.patch("/{board_id}", response_model=Board)
+def update_board(
+    board_id: str,
+    payload: UpdateBoardRequest,
+    repository: BoardRepository = Depends(get_repository),
+) -> Board:
+    try:
+        return repository.update_board(board_id, name=payload.name)
     except BoardNotFoundError:
         raise HTTPException(status_code=404, detail=f"No board exists with id '{board_id}'")
 
