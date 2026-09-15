@@ -1,7 +1,9 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { createBoard } from "../lib/api";
+import { rememberLocalBoard } from "../lib/localBoards";
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -9,6 +11,7 @@ export const Route = createFileRoute("/")({
 
 function Index() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,6 +21,7 @@ function Index() {
     setError(null);
     try {
       const board = await createBoard(name.trim() || undefined);
+      rememberLocalBoard(queryClient, { id: board.id, name: board.name });
       await navigate({ to: "/boards/$boardId", params: { boardId: board.id } });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");

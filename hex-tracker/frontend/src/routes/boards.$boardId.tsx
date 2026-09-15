@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, X, GripVertical, Pencil, Check } from "lucide-react";
 
 import {
@@ -11,6 +11,7 @@ import {
   updateCard,
   type ColumnId,
 } from "../lib/api";
+import { rememberLocalBoard } from "../lib/localBoards";
 
 export const Route = createFileRoute("/boards/$boardId")({
   component: BoardPage,
@@ -47,6 +48,15 @@ function BoardPage() {
     queryKey: ["board", boardId],
     queryFn: () => getBoard(boardId),
   });
+
+  // Remembers this board in the sidebar's list — covers both first opening
+  // a board (created here or via a shared link) and a rename elsewhere
+  // causing this query to refetch with a new name.
+  useEffect(() => {
+    if (boardQuery.data) {
+      rememberLocalBoard(queryClient, { id: boardQuery.data.id, name: boardQuery.data.name });
+    }
+  }, [boardQuery.data, queryClient]);
 
   const [addingToColumn, setAddingToColumn] = useState<ColumnId | null>(null);
   const [newCardTitle, setNewCardTitle] = useState("");
