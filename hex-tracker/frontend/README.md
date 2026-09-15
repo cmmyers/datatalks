@@ -13,6 +13,17 @@ npm install
 npm run dev
 ```
 
+## Tests
+
+```sh
+npm test
+```
+
+Route components (`src/routes/*.tsx`) are rendered through the app's real
+router (see `src/test-utils.tsx`) with the API client mocked, so tests
+exercise the same `Route.useParams()`/`Route.useRouteContext()` wiring
+production uses.
+
 ## Built with
 
 - TanStack Router (client-side routing only, no SSR)
