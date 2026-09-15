@@ -1,0 +1,13 @@
+# Source of truth for the Hex Tracker API contract between frontend and
+# backend. REST endpoints (boards, columns, cards) will be defined here
+# before the backend is implemented against them. WebSocket event shapes
+# (for live multi-session updates) aren't representable in OpenAPI and will
+# be documented separately alongside this file.
+openapi: 3.0.3
+info:
+  title: Hex Tracker API
+  version: 0.1.0
+  description: >
+    API for Hex Tracker, a shareable kanban board. See docs/SPEC.md for the
+    product spec this contract implements.
+paths: {}
