@@ -1,13 +1,271 @@
 # Source of truth for the Hex Tracker API contract between frontend and
-# backend. REST endpoints (boards, columns, cards) will be defined here
-# before the backend is implemented against them. WebSocket event shapes
-# (for live multi-session updates) aren't representable in OpenAPI and will
-# be documented separately alongside this file.
+# backend. Frontend and backend code should conform to this file, not the
+# other way around.
+#
+# Derived from frontend/src/routes/index.tsx's data model (Card, ColumnConfig)
+# and docs/SPEC.md, since the frontend prototype has no API client of its own
+# yet (it currently holds board state in local React state).
+#
+# WebSocket event shapes for live multi-session updates (see docs/SPEC.md,
+# "Share a board so others join the same session") aren't representable in
+# OpenAPI 3.0 and will be documented separately, alongside this file, once
+# the backend implements them.
 openapi: 3.0.3
 info:
   title: Hex Tracker API
   version: 0.1.0
   description: >
     API for Hex Tracker, a shareable kanban board. See docs/SPEC.md for the
-    product spec this contract implements.
-paths: {}
+    product spec this contract implements. There is no authentication —
+    anyone with a board's link can view and edit it (see SPEC.md non-goals).
+security: []
+servers:
+  - url: http://localhost:8000
+    description: Local development
+paths:
+  /boards:
+    post:
+      operationId: createBoard
+      summary: Create a board
+      description: >
+        Creates a new board with the three fixed columns (To Do, In
+        Progress, Done), all empty. No authentication required.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBoardRequest"
+      responses:
+        "201":
+          description: Board created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Board"
+        "422":
+          description: Validation error (e.g. name is not a string).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /boards/{board_id}:
+    parameters:
+      - $ref: "#/components/parameters/BoardId"
+    get:
+      operationId: getBoard
+      summary: Get a board's current state
+      description: >
+        Returns the board with its columns and cards, in position order.
+        Used both to load a board from its link and, on (re)join, to fetch
+        current state before subscribing to live updates. No authentication
+        required — the board id in the URL is the only access control.
+      responses:
+        "200":
+          description: The board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Board"
+        "404":
+          description: No board exists with this id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /boards/{board_id}/cards:
+    parameters:
+      - $ref: "#/components/parameters/BoardId"
+    post:
+      operationId: createCard
+      summary: Add a card to a column
+      description: >
+        Creates a card in the given column, appended after the column's
+        existing cards. No authentication required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCardRequest"
+      responses:
+        "201":
+          description: Card created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+        "404":
+          description: No board exists with this id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation error (e.g. empty title).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /boards/{board_id}/cards/{card_id}:
+    parameters:
+      - $ref: "#/components/parameters/BoardId"
+      - name: card_id
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      operationId: updateCard
+      summary: Edit a card, move it between columns, or reorder it
+      description: >
+        Partial update. Any combination of title/description edits and a
+        column/position move can be sent in one request. No authentication
+        required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCardRequest"
+      responses:
+        "200":
+          description: Updated card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+        "404":
+          description: No board or card exists with these ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation error (e.g. unknown column_id, empty title).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteCard
+      summary: Delete a card
+      description: No authentication required.
+      responses:
+        "204":
+          description: Card deleted.
+        "404":
+          description: No board or card exists with these ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  parameters:
+    BoardId:
+      name: board_id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    ColumnId:
+      type: string
+      enum: [todo, in-progress, done]
+      description: Fixed set of columns — not user-creatable (see SPEC.md non-goals).
+
+    Card:
+      type: object
+      required: [id, column_id, title, description, tag, position]
+      properties:
+        id:
+          type: string
+        column_id:
+          $ref: "#/components/schemas/ColumnId"
+        title:
+          type: string
+        description:
+          type: string
+          description: Empty string when none was provided.
+        tag:
+          type: string
+          description: >
+            Short free-text label shown on the card (e.g. "Strategy",
+            "Design"). Server-assigned to "New" for cards created via the
+            API; not user-editable at creation time in the current frontend.
+        position:
+          type: integer
+          minimum: 0
+          description: Order within its column, ascending.
+
+    Column:
+      type: object
+      required: [id, title, cards]
+      properties:
+        id:
+          $ref: "#/components/schemas/ColumnId"
+        title:
+          type: string
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/Card"
+
+    Board:
+      type: object
+      required: [id, name, columns]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/Column"
+
+    CreateBoardRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Defaults to "Untitled board" if omitted.
+
+    CreateCardRequest:
+      type: object
+      required: [column_id, title]
+      properties:
+        column_id:
+          $ref: "#/components/schemas/ColumnId"
+        title:
+          type: string
+          minLength: 1
+        description:
+          type: string
+
+    UpdateCardRequest:
+      type: object
+      description: All fields optional; send only what changed.
+      properties:
+        title:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        column_id:
+          $ref: "#/components/schemas/ColumnId"
+        position:
+          type: integer
+          minimum: 0
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
