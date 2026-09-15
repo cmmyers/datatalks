@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hex-tracker-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "hex-tracker/frontend", "run", "dev"],
+      "port": 5173,
+      "autoPort": true
+    }
+  ]
+}

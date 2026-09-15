@@ -3,16 +3,6 @@ import { useState, useRef } from "react";
 import { Plus, X, GripVertical, MoreHorizontal } from "lucide-react";
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Kanban Board" },
-      { name: "description", content: "A simple drag-and-drop kanban board with a jewel-tone palette." },
-      { property: "og:title", content: "Kanban Board" },
-      { property: "og:description", content: "A simple drag-and-drop kanban board with a jewel-tone palette." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-    ],
-  }),
   component: Index,
 });
 
