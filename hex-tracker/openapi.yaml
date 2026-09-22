@@ -8,8 +8,7 @@
 #
 # WebSocket event shapes for live multi-session updates (see docs/SPEC.md,
 # "Share a board so others join the same session") aren't representable in
-# OpenAPI 3.0 and will be documented separately, alongside this file, once
-# the backend implements them.
+# OpenAPI 3.0 — see docs/WEBSOCKETS.md instead.
 openapi: 3.0.3
 info:
   title: Hex Tracker API

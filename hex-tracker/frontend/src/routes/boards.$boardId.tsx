@@ -7,6 +7,7 @@ import {
   createCard,
   deleteCard,
   getBoard,
+  subscribeToBoard,
   updateBoard,
   updateCard,
   type ColumnId,
@@ -17,29 +18,27 @@ export const Route = createFileRoute("/boards/$boardId")({
   component: BoardPage,
 });
 
-const JEWEL_STYLES: Record<
-  ColumnId,
-  { header: string; dot: string; badge: string; ring: string }
-> = {
-  todo: {
-    header: "bg-jewel-amethyst-light text-jewel-amethyst",
-    dot: "bg-jewel-amethyst",
-    badge: "bg-jewel-amethyst-light text-jewel-amethyst",
-    ring: "ring-jewel-amethyst/30",
-  },
-  "in-progress": {
-    header: "bg-jewel-sapphire-light text-jewel-sapphire",
-    dot: "bg-jewel-sapphire",
-    badge: "bg-jewel-sapphire-light text-jewel-sapphire",
-    ring: "ring-jewel-sapphire/30",
-  },
-  done: {
-    header: "bg-jewel-emerald-light text-jewel-emerald",
-    dot: "bg-jewel-emerald",
-    badge: "bg-jewel-emerald-light text-jewel-emerald",
-    ring: "ring-jewel-emerald/30",
-  },
-};
+const JEWEL_STYLES: Record<ColumnId, { header: string; dot: string; badge: string; ring: string }> =
+  {
+    todo: {
+      header: "bg-jewel-amethyst-light text-jewel-amethyst",
+      dot: "bg-jewel-amethyst",
+      badge: "bg-jewel-amethyst-light text-jewel-amethyst",
+      ring: "ring-jewel-amethyst/30",
+    },
+    "in-progress": {
+      header: "bg-jewel-sapphire-light text-jewel-sapphire",
+      dot: "bg-jewel-sapphire",
+      badge: "bg-jewel-sapphire-light text-jewel-sapphire",
+      ring: "ring-jewel-sapphire/30",
+    },
+    done: {
+      header: "bg-jewel-emerald-light text-jewel-emerald",
+      dot: "bg-jewel-emerald",
+      badge: "bg-jewel-emerald-light text-jewel-emerald",
+      ring: "ring-jewel-emerald/30",
+    },
+  };
 
 function BoardPage() {
   const { boardId } = Route.useParams();
@@ -57,6 +56,16 @@ function BoardPage() {
       rememberLocalBoard(queryClient, { id: boardQuery.data.id, name: boardQuery.data.name });
     }
   }, [boardQuery.data, queryClient]);
+
+  // Live updates from other sessions on this board (see docs/SPEC.md,
+  // "Share a board so others join the same session"). Writes straight into
+  // the query cache rather than invalidating, so it applies instantly
+  // without a refetch round-trip.
+  useEffect(() => {
+    return subscribeToBoard(boardId, (board) => {
+      queryClient.setQueryData(["board", boardId], board);
+    });
+  }, [boardId, queryClient]);
 
   const [addingToColumn, setAddingToColumn] = useState<ColumnId | null>(null);
   const [newCardTitle, setNewCardTitle] = useState("");
@@ -219,9 +228,7 @@ function BoardPage() {
             className="group flex items-center gap-2 text-left"
             aria-label="Rename board"
           >
-            <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-              {board.name}
-            </h1>
+            <h1 className="text-3xl font-semibold tracking-tight text-foreground">{board.name}</h1>
             <Pencil className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
           </button>
         )}
@@ -308,9 +315,7 @@ function BoardPage() {
                         </span>
                         <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
                           <button
-                            onClick={() =>
-                              startEditingCard(card.id, card.title, card.description)
-                            }
+                            onClick={() => startEditingCard(card.id, card.title, card.description)}
                             aria-label="Edit card"
                           >
                             <Pencil className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />

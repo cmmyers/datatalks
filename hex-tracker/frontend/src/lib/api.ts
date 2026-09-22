@@ -86,3 +86,24 @@ export function updateCard(
 export function deleteCard(boardId: string, cardId: string): Promise<void> {
   return request<void>(`/boards/${boardId}/cards/${cardId}`, { method: "DELETE" });
 }
+
+type BoardUpdatedEvent = { type: "board_updated"; board: Board };
+
+/** Subscribes to a board's live-update room (see docs/WEBSOCKETS.md).
+ * `onUpdate` fires with the full board snapshot whenever the board changes,
+ * from any session. Returns an unsubscribe function; per docs/SPEC.md's
+ * non-goals there's no reconnect logic — a dropped connection stays
+ * dropped until the page is reloaded. */
+export function subscribeToBoard(boardId: string, onUpdate: (board: Board) => void): () => void {
+  const wsUrl = `${API_URL.replace(/^http/, "ws")}/boards/${boardId}/ws`;
+  const socket = new WebSocket(wsUrl);
+
+  socket.onmessage = (event) => {
+    const data = JSON.parse(event.data as string) as BoardUpdatedEvent;
+    if (data.type === "board_updated") {
+      onUpdate(data.board);
+    }
+  };
+
+  return () => socket.close();
+}

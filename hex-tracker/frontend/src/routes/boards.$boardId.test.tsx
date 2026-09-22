@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import * as api from "../lib/api";
@@ -189,5 +189,44 @@ describe("board page", () => {
     await waitFor(() =>
       expect(api.updateBoard).toHaveBeenCalledWith("board-1", { name: "New name" }),
     );
+  });
+
+  it("applies a board_updated WebSocket event from another session", async () => {
+    vi.mocked(api.getBoard).mockResolvedValue(makeBoard());
+    let pushUpdate: (board: Board) => void = () => {};
+    vi.mocked(api.subscribeToBoard).mockImplementation((_boardId, onUpdate) => {
+      pushUpdate = onUpdate;
+      return () => {};
+    });
+
+    renderAtPath("/boards/board-1");
+    await screen.findByRole("heading", { name: "Sprint Planning" });
+
+    act(() => {
+      pushUpdate(
+        makeBoard({
+          columns: [
+            {
+              id: "todo",
+              title: "To Do",
+              cards: [
+                {
+                  id: "card-1",
+                  column_id: "todo",
+                  title: "Pushed from another session",
+                  description: "",
+                  tag: "New",
+                  position: 0,
+                },
+              ],
+            },
+            { id: "in-progress", title: "In Progress", cards: [] },
+            { id: "done", title: "Done", cards: [] },
+          ],
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Pushed from another session")).toBeInTheDocument();
   });
 });
