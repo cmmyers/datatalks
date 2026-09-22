@@ -85,7 +85,8 @@ describe("BoardSidebar", () => {
     renderAtPath("/");
     await screen.findByText("Your boards");
 
-    expect(within(sidebarNav()).queryByRole("link", { name: "Doesn't matter" })).not
-      .toBeInTheDocument();
+    expect(
+      within(sidebarNav()).queryByRole("link", { name: "Doesn't matter" }),
+    ).not.toBeInTheDocument();
   });
 });

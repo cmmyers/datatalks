@@ -57,8 +57,6 @@ describe("rememberLocalBoard", () => {
 
     rememberLocalBoard(queryClient, { id: "a", name: "First" });
 
-    expect(queryClient.getQueryData(LOCAL_BOARDS_QUERY_KEY)).toEqual([
-      { id: "a", name: "First" },
-    ]);
+    expect(queryClient.getQueryData(LOCAL_BOARDS_QUERY_KEY)).toEqual([{ id: "a", name: "First" }]);
   });
 });

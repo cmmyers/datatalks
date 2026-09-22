@@ -18,10 +18,7 @@ export function BoardSidebar() {
 
   return (
     <aside className="w-56 shrink-0 border-r border-border bg-card/40 px-3 py-6">
-      <Link
-        to="/"
-        className="mb-4 block px-2 text-sm font-semibold tracking-tight text-foreground"
-      >
+      <Link to="/" className="mb-4 block px-2 text-sm font-semibold tracking-tight text-foreground">
         Hex Tracker
       </Link>
       <h2 className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
