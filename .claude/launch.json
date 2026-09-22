@@ -13,13 +13,11 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": [
         "run",
-        "--project",
+        "--directory",
         "hex-tracker/backend",
         "uvicorn",
         "app.main:app",
         "--reload",
-        "--app-dir",
-        "hex-tracker/backend",
         "--port",
         "8000"
       ],

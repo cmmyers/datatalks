@@ -1,7 +1,12 @@
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from .routers.boards import router as boards_router
 
@@ -31,3 +36,58 @@ async def validation_exception_handler(
         for error in exc.errors()
     )
     return JSONResponse(status_code=422, content={"detail": message})
+
+
+# The production Docker image copies the frontend's built assets here (see
+# Dockerfile); in local dev this directory doesn't exist, since the frontend
+# runs separately under Vite, so serving it is skipped entirely.
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "static"
+
+if FRONTEND_DIST.is_dir():
+
+    def _spa_shell() -> FileResponse:
+        response = FileResponse(FRONTEND_DIST / "index.html")
+        # Vary: Accept is load-bearing, not decorative — GET /boards/{id} is
+        # served two different ways from the exact same URL depending on
+        # Accept (see the middleware below). Without this header, a
+        # browser's HTTP cache has no reason to treat those as different
+        # cache entries: the page-load response (HTML) gets cached and then
+        # incorrectly reused for the app's own same-URL fetch() moments
+        # later, which sends a different Accept and expects JSON back.
+        response.headers["Vary"] = "Accept"
+        return response
+
+    class SpaFallbackMiddleware(BaseHTTPMiddleware):
+        """The frontend's client-side router and the API share the same
+        origin and, in one case, the same path shape: GET /boards/{id} is
+        both "fetch this board's JSON" (API) and "render the board page"
+        (frontend route). A real browser navigation — pasting/opening a
+        shared board link, or reloading one — asks for that path with
+        `Accept: text/html` and needs the app shell, not the JSON the API
+        route would otherwise return for the exact same URL. A same-origin
+        `fetch()` from the already-loaded app doesn't send that Accept
+        value, so it still reaches the API normally. Runs before routing,
+        so it pre-empts the API route entirely for page loads."""
+
+        async def dispatch(self, request: Request, call_next) -> Response:
+            if (
+                request.method == "GET"
+                and "text/html" in request.headers.get("accept", "")
+                and not request.url.path.startswith("/assets")
+            ):
+                return _spa_shell()
+            return await call_next(request)
+
+    app.add_middleware(SpaFallbackMiddleware)
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str) -> FileResponse:
+        """Catches whatever the middleware above doesn't: real static files
+        at the dist root that aren't fetched as a page navigation, like
+        /favicon.ico or /robots.txt. Falls back to index.html for anything
+        else non-API that reaches this point."""
+        candidate = FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return _spa_shell()
