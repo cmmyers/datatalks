@@ -31,7 +31,13 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in .env before starting caddy}
+      # Compose interpolates every service's config up front, even ones
+      # not being started — a required-var (":?") default here broke
+      # `docker compose up db app` before caddy ever entered the picture.
+      # Real value comes from deploy/.env, written once the instance's
+      # Elastic IP (and so its sslip.io domain) is known; this fallback
+      # only matters for that earlier `db app`-only bring-up.
+      DOMAIN: ${DOMAIN:-localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
