@@ -24,6 +24,14 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    """Liveness check for orchestration (Docker Compose healthcheck, load
+    balancer target health, CI/CD deploy verification) — infra concern, not
+    part of the frontend-backend contract, so it's not in openapi.yaml."""
+    return {"status": "ok"}
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError

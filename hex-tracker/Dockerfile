@@ -25,6 +25,11 @@ COPY --from=frontend-build /app/frontend/dist ./static
 ENV DATABASE_URL=sqlite:////data/hex_tracker.db
 
 EXPOSE 8000
+# No curl/wget in the slim base image, so use Python (already present) to
+# hit /health for Compose's `service_healthy` condition and orchestrators
+# generally.
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=5 \
+    CMD python -c "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=2)" || exit 1
 # --frozen --no-dev here too: without them, `uv run` re-syncs against the
 # full dependency set (including dev-only deps like pytest) on every
 # container start — needless network access, and non-deterministic if that
