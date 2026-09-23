@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Hex Tracker — a single EC2 instance running the app, Postgres, and Caddy
+  (via Docker Compose). A proof-of-concept deployment: one instance, no
+  managed database, no auto-scaling. See ../AGENTS.md and this file's
+  sibling README.md for the deploy/teardown workflow.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to launch the instance in (the account's default VPC works).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet within that VPC (must be public — the instance gets a direct EIP).
+  SshCidr:
+    Type: String
+    Description: CIDR allowed to SSH in — your own IP/32, not 0.0.0.0/0.
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small]
+  LatestUbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Resolved at deploy time — no AMI id to keep updated by hand.
+
+Resources:
+  KeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub "${AWS::StackName}-key"
+      KeyType: rsa
+      KeyFormat: pem
+      # CloudFormation stores the private key in SSM Parameter Store at
+      # /ec2/keypair/{KeyPairId} — fetch it with `aws ssm get-parameter
+      # --with-decryption` rather than hunting for a local .pem file.
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} — SSH from one IP, HTTP/HTTPS from anyone"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshCidr
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestUbuntuAmiId
+      KeyName: !Ref KeyPair
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          apt-get update -y
+          apt-get install -y ca-certificates curl git
+
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+            > /etc/apt/sources.list.d/docker.list
+          apt-get update -y
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          usermod -aG docker ubuntu
+
+          # Clones the public repo and brings up db+app only — Caddy needs
+          # the instance's own domain (derived from its EIP, allocated by
+          # this same stack) to request a TLS cert for, which isn't known
+          # until after this instance exists. A short follow-up step over
+          # SSH writes deploy/.env with DOMAIN and starts caddy once the
+          # EIP is in hand (see README.md).
+          sudo -u ubuntu git clone --depth 1 https://github.com/cmmyers/datatalks.git /home/ubuntu/datatalks
+          cd /home/ubuntu/datatalks/hex-tracker/deploy
+          docker compose -f docker-compose.prod.yaml up -d --build db app
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+
+Outputs:
+  PublicIp:
+    Value: !Ref ElasticIp
+  SshKeyParameter:
+    Description: Fetch the private key with `aws ssm get-parameter --name <this> --with-decryption --query Parameter.Value --output text > key.pem && chmod 400 key.pem`
+    Value: !Sub "/ec2/keypair/${KeyPair.KeyPairId}"
+  SshCommand:
+    Value: !Sub "ssh -i key.pem ubuntu@${ElasticIp}"
+  SslipDomain:
+    Description: Free wildcard DNS pointing at this instance's IP — use this as DOMAIN for Caddy.
+    Value: !Sub "${ElasticIp}.sslip.io"

@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hex_tracker
+      POSTGRES_PASSWORD: hex_tracker
+      POSTGRES_DB: hex_tracker
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hex_tracker -d hex_tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build: ..
+    environment:
+      DATABASE_URL: postgresql://hex_tracker:hex_tracker@db:5432/hex_tracker
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    # No host port published — only Caddy is reachable from outside the
+    # instance; it talks to this over the compose network as `app:8000`.
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env before starting caddy}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
