@@ -39,7 +39,7 @@ Resources:
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub "${AWS::StackName} — SSH from one IP, HTTP/HTTPS from anyone"
+      GroupDescription: !Sub "${AWS::StackName} - SSH from one IP, HTTP/HTTPS from anyone"
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -89,7 +89,13 @@ Resources:
           # until after this instance exists. A short follow-up step over
           # SSH writes deploy/.env with DOMAIN and starts caddy once the
           # EIP is in hand (see README.md).
-          sudo -u ubuntu git clone --depth 1 https://github.com/cmmyers/datatalks.git /home/ubuntu/datatalks
+          # Cloned as root (this whole script already runs as root) rather
+          # than `sudo -u ubuntu git clone` — that dropped-privilege form
+          # returned before the clone had actually finished writing files,
+          # so the `cd` right after it would fail. chown afterward so the
+          # ubuntu user still owns its own checkout.
+          git clone --depth 1 https://github.com/cmmyers/datatalks.git /home/ubuntu/datatalks
+          chown -R ubuntu:ubuntu /home/ubuntu/datatalks
           cd /home/ubuntu/datatalks/hex-tracker/deploy
           docker compose -f docker-compose.prod.yaml up -d --build db app
 
