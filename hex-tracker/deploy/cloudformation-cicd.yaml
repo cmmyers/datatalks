@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GitHub Actions OIDC identity for deploying hex-tracker — deliberately
+  separate from cloudformation.yaml (the instance/app stack). That stack
+  gets deleted and recreated between uses to avoid paying for an idle
+  EC2 instance the whole time; this one doesn't, so tearing the app down
+  doesn't also destroy the CI/CD deploy credentials and force resetting
+  the GitHub secret on every redeploy. Create this once — see README.md.
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # GitHub's OIDC token-signing cert chain thumbprints (both the
+      # current and prior intermediate, per AWS's own GitHub OIDC guide).
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hex-tracker-github-actions-deploy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              # Only a workflow run triggered by a push to main in this
+              # exact repo can assume this role — not other branches, not
+              # PRs (including from forks), not other repos.
+              #
+              # IAM requires this condition to scope `sub` (or
+              # job_workflow_ref) itself — a condition on `repository`/`ref`
+              # alone is rejected at the API level, even though those
+              # claims do work and would have been just as precise. And
+              # this account's tokens carry `sub` in the numeric-id form
+              # (repo:OWNER@id/REPO@id:ref:...), not the plain-name form
+              # AWS's own OIDC docs show as the example — this exact value
+              # was confirmed by decoding a real token from this repo, not
+              # guessed. cmmyers/datatalks: owner id 7402120, repo id
+              # 1360685851.
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: "repo:cmmyers@7402120/datatalks@1360685851:ref:refs/heads/main"
+      Policies:
+        - PolicyName: deploy-via-ssm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript"
+              - Effect: Allow
+                Action: ssm:SendCommand
+                # Scoped by tag, not by a specific instance ARN/id — the
+                # app stack's instance gets torn down and recreated (new
+                # id each time), so a hardcoded id here would go stale the
+                # first time that happens. cloudformation.yaml tags its
+                # instance Name=<stack name>, i.e. Name=hex-tracker.
+                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/Name: hex-tracker
+              - Effect: Allow
+                # These two SSM read APIs don't support resource-level
+                # restriction — AWS requires Resource: "*" for them.
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: "*"
+              - Effect: Allow
+                Action: cloudformation:DescribeStacks
+                # Wildcarded stack id for the same reason as the instance
+                # ARN above: recreating the "hex-tracker"-named stack gets
+                # it a new id each time.
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/hex-tracker/*"
+
+Outputs:
+  GitHubActionsRoleArn:
+    Description: Set as the AWS_DEPLOY_ROLE_ARN GitHub Actions secret — one-time, not per app deploy.
+    Value: !GetAtt GitHubActionsDeployRole.Arn

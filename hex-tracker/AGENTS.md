@@ -4,6 +4,7 @@
 
 ```
 backend/            # FastAPI application and its tests
+deploy/             # AWS deployment — CloudFormation, prod compose file, Caddyfile (see deploy/README.md)
 docs/               # supporting documentation (product spec, etc.)
 e2e/                # Playwright tests against the docker-compose stack
 frontend/           # React + TanStack Router SPA

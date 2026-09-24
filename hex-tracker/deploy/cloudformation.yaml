@@ -2,8 +2,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Hex Tracker — a single EC2 instance running the app, Postgres, and Caddy
   (via Docker Compose). A proof-of-concept deployment: one instance, no
-  managed database, no auto-scaling. See ../AGENTS.md and this file's
-  sibling README.md for the deploy/teardown workflow.
+  managed database, no auto-scaling. Meant to be deleted and recreated
+  between uses (see README.md) — the GitHub Actions deploy identity lives
+  in the separate, persistent cloudformation-cicd.yaml precisely so that
+  cycle doesn't also tear down CI/CD each time.
 
 Parameters:
   VpcId:
@@ -47,71 +49,6 @@ Resources:
     Properties:
       Roles:
         - !Ref InstanceRole
-
-  # --- GitHub Actions OIDC: lets a workflow run in this specific repo, on
-  # pushes to main specifically, assume a role scoped to exactly what
-  # deploying needs — no long-lived AWS credentials stored as a CI secret.
-  GitHubOidcProvider:
-    Type: AWS::IAM::OIDCProvider
-    Properties:
-      Url: https://token.actions.githubusercontent.com
-      ClientIdList:
-        - sts.amazonaws.com
-      # GitHub's OIDC token-signing cert chain thumbprints (both the
-      # current and prior intermediate, per AWS's own GitHub OIDC guide).
-      ThumbprintList:
-        - 6938fd4d98bab03faadb97b34396831e3780aea1
-        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
-
-  GitHubActionsDeployRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${AWS::StackName}-github-actions-deploy"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Ref GitHubOidcProvider
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              # Only a workflow run triggered by a push to main in this
-              # exact repo can assume this role — not other branches, not
-              # PRs (including from forks), not other repos.
-              #
-              # IAM requires this condition to scope `sub` (or
-              # job_workflow_ref) itself — a condition on `repository`/`ref`
-              # alone is rejected at the API level, even though those claims
-              # do work and would have been just as precise. And this
-              # account's tokens carry `sub` in the numeric-id form
-              # (repo:OWNER@id/REPO@id:ref:...), not the plain-name form
-              # AWS's own OIDC docs show as the example — this exact value
-              # was confirmed by decoding a real token from this repo, not
-              # guessed. cmmyers/datatalks: owner id 7402120, repo id
-              # 1360685851.
-              StringEquals:
-                token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: "repo:cmmyers@7402120/datatalks@1360685851:ref:refs/heads/main"
-      Policies:
-        - PolicyName: deploy-via-ssm
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: ssm:SendCommand
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript"
-              - Effect: Allow
-                # These two SSM read APIs don't support resource-level
-                # restriction — AWS requires Resource: "*" for them.
-                Action:
-                  - ssm:GetCommandInvocation
-                  - ssm:ListCommandInvocations
-                Resource: "*"
-              - Effect: Allow
-                Action: cloudformation:DescribeStacks
-                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
 
   KeyPair:
     Type: AWS::EC2::KeyPair
@@ -205,8 +142,5 @@ Outputs:
     Description: Free wildcard DNS pointing at this instance's IP — use this as DOMAIN for Caddy.
     Value: !Sub "${ElasticIp}.sslip.io"
   InstanceId:
-    Description: SSM/CI deploy target — see GitHubActionsRoleArn.
+    Description: SSM/CI deploy target — the CI role lives in cloudformation-cicd.yaml, not here.
     Value: !Ref Instance
-  GitHubActionsRoleArn:
-    Description: Set as the AWS_DEPLOY_ROLE_ARN GitHub Actions secret/variable.
-    Value: !GetAtt GitHubActionsDeployRole.Arn

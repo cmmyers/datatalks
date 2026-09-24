@@ -6,6 +6,37 @@ and Caddy (TLS termination + reverse proxy) via Docker Compose — see
 no auto-scaling, no load balancer. Good enough to have a real HTTPS URL to
 hand someone; not how you'd run this at real scale.
 
+## One-time setup: CI/CD identity
+
+Before the first deploy, create the persistent stack that lets GitHub
+Actions deploy without any AWS credentials stored in GitHub — a scoped
+IAM role, assumed via GitHub's OIDC provider:
+
+```sh
+aws cloudformation create-stack \
+  --stack-name hex-tracker-cicd \
+  --template-body file://cloudformation-cicd.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-west-1
+
+aws cloudformation wait stack-create-complete --stack-name hex-tracker-cicd --region us-west-1
+
+aws cloudformation describe-stacks --stack-name hex-tracker-cicd --region us-west-1 \
+  --query 'Stacks[0].Outputs[0].OutputValue' --output text
+```
+
+Set that ARN as a GitHub secret:
+
+```sh
+gh secret set AWS_DEPLOY_ROLE_ARN --repo <owner>/<repo> --body "<the ARN above>"
+```
+
+This is deliberately its own stack, separate from the app/instance stack
+below — that one gets deleted and recreated between uses (see
+[Clean up](#clean-up)), and this way that cycle doesn't also destroy the
+CI/CD identity or force re-setting the GitHub secret every time. Do this
+once; skip it on every subsequent deploy.
+
 ## Deploy
 
 1. Create the stack (fill in your own IP for `SshCidr`):
@@ -82,30 +113,29 @@ runs on every push and PR touching `hex-tracker/**`:
    `https://<domain>/health` endpoint to confirm the deploy actually
    worked, not just that the command finished.
 
-The `cloudformation.yaml` in this directory provisions the OIDC provider
-and the deploy role itself (`GitHubOidcProvider`, `GitHubActionsDeployRole`)
-— nothing to set up by hand in AWS's IAM console. After creating or
-updating the stack, set its `GitHubActionsRoleArn` output as the
-`AWS_DEPLOY_ROLE_ARN` secret on the GitHub repo:
-
-```sh
-gh secret set AWS_DEPLOY_ROLE_ARN --repo <owner>/<repo> --body "<GitHubActionsRoleArn output>"
-```
-
-The deploy role's trust policy only allows `sts:AssumeRoleWithWebIdentity`
-for workflow runs triggered by a push to `main` in this exact repo — not
-other branches, not pull requests (including from forks), not other repos.
+The deploy role (`cloudformation-cicd.yaml`, see
+[One-time setup](#one-time-setup-cicd-identity) above) only allows
+`sts:AssumeRoleWithWebIdentity` for workflow runs triggered by a push to
+`main` in this exact repo — not other branches, not pull requests
+(including from forks), not other repos. Its SSM permission is scoped by
+the instance's `Name=hex-tracker` tag rather than a specific instance id,
+since that id changes every time the app stack is recreated — if `deploy`
+runs while no `hex-tracker` stack exists at all, it detects that and skips
+the deploy/verify steps instead of failing.
 
 ## Clean up
 
-Stop paying for it the moment you're done:
+Stop paying for the instance the moment you're done — this only tears down
+the app stack, not `hex-tracker-cicd` (see above), so CI/CD is still ready
+to go next time you redeploy:
 
 ```sh
 aws cloudformation delete-stack --stack-name hex-tracker --region us-west-1
 aws cloudformation wait stack-delete-complete --stack-name hex-tracker --region us-west-1
-rm -f key.pem   # local private key copy, now useless
+rm -f key.pem .env   # local private key and domain config, now useless
 ```
 
 This deletes the instance, its Elastic IP, the security group, and the
-CloudFormation-managed key pair (SSM parameter included) — nothing about
-this deployment lives outside the stack.
+CloudFormation-managed key pair (SSM parameter included). To redeploy
+later, just repeat [Deploy](#deploy) above — a fresh instance, fresh IP,
+fresh `sslip.io` domain (Caddy requests a new cert for it automatically).
