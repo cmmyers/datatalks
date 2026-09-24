@@ -75,13 +75,23 @@ Resources:
               Federated: !Ref GitHubOidcProvider
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
-              StringEquals:
-                token.actions.githubusercontent.com:aud: sts.amazonaws.com
               # Only a workflow run triggered by a push to main in this
               # exact repo can assume this role — not other branches, not
               # PRs (including from forks), not other repos.
-              StringLike:
-                token.actions.githubusercontent.com:sub: repo:cmmyers/datatalks:ref:refs/heads/main
+              #
+              # IAM requires this condition to scope `sub` (or
+              # job_workflow_ref) itself — a condition on `repository`/`ref`
+              # alone is rejected at the API level, even though those claims
+              # do work and would have been just as precise. And this
+              # account's tokens carry `sub` in the numeric-id form
+              # (repo:OWNER@id/REPO@id:ref:...), not the plain-name form
+              # AWS's own OIDC docs show as the example — this exact value
+              # was confirmed by decoding a real token from this repo, not
+              # guessed. cmmyers/datatalks: owner id 7402120, repo id
+              # 1360685851.
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: "repo:cmmyers@7402120/datatalks@1360685851:ref:refs/heads/main"
       Policies:
         - PolicyName: deploy-via-ssm
           PolicyDocument:
