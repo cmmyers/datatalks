@@ -26,6 +26,83 @@ Parameters:
     Description: Resolved at deploy time — no AMI id to keep updated by hand.
 
 Resources:
+  # --- SSM, so GitHub Actions can command the instance without an SSH key
+  # as a CI secret. Canonical's Ubuntu AMIs ship the SSM agent
+  # pre-installed and running; it just needs an IAM role to register with.
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  # --- GitHub Actions OIDC: lets a workflow run in this specific repo, on
+  # pushes to main specifically, assume a role scoped to exactly what
+  # deploying needs — no long-lived AWS credentials stored as a CI secret.
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # GitHub's OIDC token-signing cert chain thumbprints (both the
+      # current and prior intermediate, per AWS's own GitHub OIDC guide).
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-github-actions-deploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              # Only a workflow run triggered by a push to main in this
+              # exact repo can assume this role — not other branches, not
+              # PRs (including from forks), not other repos.
+              StringLike:
+                token.actions.githubusercontent.com:sub: repo:cmmyers/datatalks:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-via-ssm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript"
+              - Effect: Allow
+                # These two SSM read APIs don't support resource-level
+                # restriction — AWS requires Resource: "*" for them.
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: "*"
+              - Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+
   KeyPair:
     Type: AWS::EC2::KeyPair
     Properties:
@@ -62,6 +139,7 @@ Resources:
       ImageId: !Ref LatestUbuntuAmiId
       KeyName: !Ref KeyPair
       SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref InstanceProfile
       SecurityGroupIds:
         - !Ref SecurityGroup
       Tags:
@@ -116,3 +194,9 @@ Outputs:
   SslipDomain:
     Description: Free wildcard DNS pointing at this instance's IP — use this as DOMAIN for Caddy.
     Value: !Sub "${ElasticIp}.sslip.io"
+  InstanceId:
+    Description: SSM/CI deploy target — see GitHubActionsRoleArn.
+    Value: !Ref Instance
+  GitHubActionsRoleArn:
+    Description: Set as the AWS_DEPLOY_ROLE_ARN GitHub Actions secret/variable.
+    Value: !GetAtt GitHubActionsDeployRole.Arn

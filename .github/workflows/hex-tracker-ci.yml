@@ -1,0 +1,156 @@
+name: hex-tracker CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hex-tracker/**"
+      - ".github/workflows/hex-tracker-ci.yml"
+  pull_request:
+    paths:
+      - "hex-tracker/**"
+      - ".github/workflows/hex-tracker-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: hex-tracker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hex-tracker/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run pytest -q
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hex-tracker/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hex-tracker/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx vitest run
+      - run: npm run build
+
+  e2e-tests:
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the app + Postgres stack
+        working-directory: hex-tracker
+        run: docker compose up --build -d
+
+      - name: Wait for the app to report healthy
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8100/health && exit 0
+            sleep 2
+          done
+          echo "app never became healthy" >&2
+          docker compose -f hex-tracker/docker-compose.yaml logs
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hex-tracker/e2e/package-lock.json
+
+      - name: Install e2e dependencies
+        working-directory: hex-tracker/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run e2e tests against the compose stack
+        working-directory: hex-tracker/e2e
+        run: npx playwright test
+        env:
+          BASE_URL: http://localhost:8100
+
+      - name: Compose logs (always, for debugging)
+        if: always()
+        working-directory: hex-tracker
+        run: docker compose logs
+
+      - name: Tear down the stack
+        if: always()
+        working-directory: hex-tracker
+        run: docker compose down -v
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: hex-tracker/e2e/playwright-report/
+          retention-days: 7
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [e2e-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      id-token: write # required to assume the role via OIDC
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-1
+
+      - name: Resolve the deploy target from the CloudFormation stack
+        id: stack
+        run: |
+          OUT=$(aws cloudformation describe-stacks --stack-name hex-tracker --query 'Stacks[0].Outputs' --output json)
+          echo "instance_id=$(echo "$OUT" | jq -r '.[] | select(.OutputKey=="InstanceId") | .OutputValue')" >> "$GITHUB_OUTPUT"
+          echo "domain=$(echo "$OUT" | jq -r '.[] | select(.OutputKey=="SslipDomain") | .OutputValue')" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy over SSM (git pull + docker compose up --build)
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${{ steps.stack.outputs.instance_id }}" \
+            --document-name AWS-RunShellScript \
+            --parameters 'commands=["set -e","cd /home/ubuntu/datatalks","sudo -u ubuntu git fetch origin main","sudo -u ubuntu git reset --hard origin/main","cd hex-tracker/deploy","docker compose -f docker-compose.prod.yaml up -d --build"]' \
+            --query 'Command.CommandId' --output text)
+          echo "Deploy command: $CMD_ID"
+
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "${{ steps.stack.outputs.instance_id }}" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            echo "status: $STATUS"
+            case "$STATUS" in
+              Success) exit 0 ;;
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "${{ steps.stack.outputs.instance_id }}"
+                exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "timed out waiting for the deploy command" >&2
+          exit 1
+
+      - name: Verify the deploy — hit the real health endpoint
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf "https://${{ steps.stack.outputs.domain }}/health" && exit 0
+            sleep 5
+          done
+          echo "deployed app never became healthy at https://${{ steps.stack.outputs.domain }}/health" >&2
+          exit 1

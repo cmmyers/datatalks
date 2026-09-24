@@ -52,11 +52,49 @@ hand someone; not how you'd run this at real scale.
 
 ## Redeploying a change
 
+By hand:
+
 ```sh
 ssh -i key.pem ubuntu@<PublicIp>
 cd datatalks/hex-tracker && git pull
 cd deploy && docker compose -f docker-compose.prod.yaml up -d --build
 ```
+
+Or automatically — see [CI/CD](#cicd) below.
+
+## CI/CD
+
+[../../.github/workflows/hex-tracker-ci.yml](../../.github/workflows/hex-tracker-ci.yml)
+runs on every push and PR touching `hex-tracker/**`:
+
+1. `backend-tests` and `frontend-tests` run in parallel (pytest; lint,
+   vitest, and a production build for the frontend).
+2. `e2e-tests` builds and starts [docker-compose.yaml](../docker-compose.yaml)
+   (the app + Postgres, not the AWS deployment) and runs the Playwright
+   suite from [../e2e](../e2e) against it.
+3. `deploy` — pushes to `main` only, after the above pass — assumes an
+   AWS IAM role via GitHub's OIDC provider (no AWS credentials stored in
+   GitHub at all) and runs the redeploy command on the EC2 instance via
+   **SSM Run Command**, not SSH: no private key touches CI either. It
+   looks up the instance id and domain from the CloudFormation stack's
+   outputs at run time, so nothing about the current instance is
+   hardcoded in the workflow. Finishes by hitting the real
+   `https://<domain>/health` endpoint to confirm the deploy actually
+   worked, not just that the command finished.
+
+The `cloudformation.yaml` in this directory provisions the OIDC provider
+and the deploy role itself (`GitHubOidcProvider`, `GitHubActionsDeployRole`)
+— nothing to set up by hand in AWS's IAM console. After creating or
+updating the stack, set its `GitHubActionsRoleArn` output as the
+`AWS_DEPLOY_ROLE_ARN` secret on the GitHub repo:
+
+```sh
+gh secret set AWS_DEPLOY_ROLE_ARN --repo <owner>/<repo> --body "<GitHubActionsRoleArn output>"
+```
+
+The deploy role's trust policy only allows `sts:AssumeRoleWithWebIdentity`
+for workflow runs triggered by a push to `main` in this exact repo — not
+other branches, not pull requests (including from forks), not other repos.
 
 ## Clean up
 
